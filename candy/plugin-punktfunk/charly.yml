@@ -53,3 +53,126 @@ plugin-punktfunk:
               retry_interval: 5s
               context:
                 - runtime
+
+punktfunk-skill:
+    skill:
+        name: punktfunk
+        family: check
+        owner: plugin-punktfunk
+        description: |-
+            the `punktfunk:` check verb — probe AND manage a running punktfunk streaming
+            host over its management REST API (health, status, diagnostics, compositors,
+            gpus, pairing, clients, library, virtual displays, plugins, hooks, actions, and
+            a bounded SSE event subscription), served out-of-process by plugin-punktfunk.
+        triggers:
+            - "the `punktfunk:` check verb / probing or managing a punktfunk streaming host from a candy or box plan"
+        content: |
+            # punktfunk — streaming-host check verb
+
+            ## Overview
+
+            `punktfunk:` drives a running [punktfunk](https://git.unom.io/unom/punktfunk)
+            host through its management REST API. It both **probes** a host and **manages**
+            one, served out-of-process over go-plugin gRPC by
+            `opencharly/plugin-punktfunk`.
+
+            Install the host itself with `/charly-punktfunk:punktfunk-host`.
+
+            ## Why it is not the `http:` verb
+
+            `http:` already does URL + status + body/header matchers. This verb exists for
+            what `http:` structurally cannot do:
+
+            - **Token discovery.** The bearer token is generated per host at first start and
+              lives at `~/.config/punktfunk/mgmt-token` **inside the venue**. An authored
+              `http:` step cannot read a per-deploy secret out of a container or guest.
+              (The file is an env-file line, `PUNKTFUNK_MGMT_TOKEN=…`, not a bare token —
+              sending the raw line yields a clean 401.)
+            - **Domain semantics.** Methods map to endpoints and return real verdicts, with
+              `json_path:` to assert one field instead of pattern-matching a JSON blob.
+            - **`events`.** A bounded SSE subscription is the only way to assert a
+              *transition*; polling `/api/v1/host` observes a state, never that a stream
+              started.
+
+            ## The request runs INSIDE the venue
+
+            punktfunk binds the management API to loopback by design (the web console is the
+            network-facing surface). A host-vantage request cannot reach a loopback-bound
+            listener in a container, and the two ways to make it reachable — republishing
+            the port or a socat relay — would weaken exactly that posture. So the verb
+            issues its request in-venue over the reverse channel, which also puts it on the
+            same side as the token. **`curl` must exist in the venue**; its absence is
+            reported as such.
+
+            ## Methods
+
+            | Group | Methods |
+            |---|---|
+            | host / health | `health` `status` `diagnostics` `diagnostics-refresh` `compositors` `gpus` `plugins` `hooks` |
+            | native pairing | `pair-status` `pair-arm` `pair-disarm` `pending` `approve` `deny` `pin` |
+            | paired clients | `clients` `rename` `access` `unpair` |
+            | library | `library` `scanners` `scanner-toggle` |
+            | virtual displays | `display-state` `display-monitors` `display-settings` `display-release` |
+            | lifecycle | `actions` `action-invoke` `end-game` |
+            | stream | `events` |
+
+            `health` is the only unauthenticated route, so it works before a token exists —
+            which makes it the right first probe on a fresh host.
+
+            **Mutating methods are refused in a `check:` step.** `pair-arm`, `approve`,
+            `deny`, `unpair`, `rename`, `access`, `scanner-toggle`, `display-release`,
+            `action-invoke`, `end-game`, `pin` and `diagnostics-refresh` change host state
+            and must be authored as `run:` steps, so a probe can never silently unpair a
+            device or reboot a machine.
+
+            ## Input fields
+
+            | Field | Meaning |
+            |---|---|
+            | `method` | the operation (also the scalar-sugar primary: `punktfunk: status`) |
+            | `port` | management API port (default 47990) |
+            | `token` / `token_file` | override the bearer; default is `~/.config/punktfunk/mgmt-token` in the venue |
+            | `verify_tls` | require a verifiable chain. **Default off** — punktfunk serves a self-signed cert. Named this way (not `insecure`) so the ZERO VALUE is the correct default, which a bool could not express otherwise. |
+            | `fingerprint` / `pending_id` / `action_id` / `provider_id` | the target of a per-entity method |
+            | `name` / `access` / `pin` / `enabled` | payloads for rename / access / pin / scanner-toggle |
+            | `kinds` / `count` / `event_timeout` | the `events` subscription window |
+            | `json_path` | dotted path into the response; stdout becomes that value |
+
+            ## Examples
+
+            ```yaml
+            # Liveness, before any token exists.
+            - check: the host's management API reports itself live
+              punktfunk: health
+              stdout: [{contains: '"status":"ok"'}]
+              eventually: 90s
+              retry_interval: 5s
+              context: [runtime]
+
+            # Assert ONE field instead of matching a blob.
+            - check: the host reports ok
+              punktfunk:
+                method: health
+                json_path: status
+              stdout: [{equals: ok}]
+              context: [runtime]
+
+            # Managing is a run: step, never a check:.
+            - run: arm native pairing so a device can enrol
+              punktfunk: pair-arm
+
+            # Wait for a TRANSITION rather than polling a state.
+            - check: a stream actually started
+              punktfunk:
+                method: events
+                kinds: "stream.started"
+                count: 1
+                event_timeout: 60s
+              context: [runtime]
+            ```
+
+            ## Cross-References
+
+            - `/charly-punktfunk:punktfunk-host` — the candy that installs the host
+            - `/charly-check:check` — the check orchestrator, beds and the R10 sequence
+            - `/charly-internals:plugin` — the out-of-process plugin model this verb follows
