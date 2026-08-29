@@ -6,7 +6,7 @@ import "testing"
 // that matters: parsing it wrongly sends "PUNKTFUNK_MGMT_TOKEN=<token>" as the bearer and
 // every authenticated method returns 401 — the exact failure a live bed run surfaced.
 func TestParseTokenFile(t *testing.T) {
-	const tok = "d0c73fe4eee1ef0cf45e2d706cd60aeb71c0e1880c3ba8674ea0ace05a976dbf"
+	const tok = "example-token-not-a-real-credential"
 	for name, in := range map[string]string{
 		"env-file form (what punktfunk 0.33.0-1 actually writes)": "PUNKTFUNK_MGMT_TOKEN=" + tok + "\n",
 		"bare token":            tok + "\n",

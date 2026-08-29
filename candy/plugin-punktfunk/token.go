@@ -11,7 +11,7 @@ import (
 // persisted API token … path=~/.config/punktfunk/mgmt-token") suggests. Measured
 // against punktfunk-host 0.33.0-1, it is an ENV-FILE LINE:
 //
-//	PUNKTFUNK_MGMT_TOKEN=d0c73fe4eee1ef0cf45e2d706cd60aeb71c0e1880c3ba8674ea0ace05a976dbf
+//	PUNKTFUNK_MGMT_TOKEN=<64-hex-token>
 //
 // Sending the whole line as the bearer yields a clean HTTP 401
 // ("missing or invalid credentials"), which is exactly what a live bed run caught and
