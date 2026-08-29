@@ -1,0 +1,64 @@
+# Gate the plugin candy against the pinned charly.
+#
+# NOTE on the candy step: running `charly box validate` at a PLUGIN repo root validates
+# NOTHING — the repo has no project charly.yml, so discovery never reaches
+# candy/<name>/charly.yml and the command exits 0 on any manifest, including one with a
+# malformed `plugin.providers` entry (measured). This job therefore stages a minimal
+# project with a `discover:` block so the manifest is actually parsed and schema-checked,
+# and additionally builds, vets and tests the Go module — which is the substance of a
+# plugin repo and what the stock template omits entirely.
+name: candy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: candy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch the pinned charly source (CI-time temp checkout)
+        run: |
+          git clone --depth 1 --branch v2026.241.1535 https://github.com/opencharly/charly.git /tmp/charly
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: /tmp/charly/charly/go.mod
+          cache-dependency-path: /tmp/charly/charly/go.sum
+
+      - name: Build the charly binary from the pinned checkout
+        run: |
+          mkdir -p /tmp/charly/bin
+          cd /tmp/charly/charly && go build -buildvcs=false -ldflags "-X main.BuildCalVer=candy-ci" -o /tmp/charly/bin/charly .
+
+      - name: The candy manifest validates at the pinned charly
+        run: |
+          # Stage a project whose discover: block actually reaches the candy, so this
+          # step gates the manifest instead of silently passing on an empty scan.
+          mkdir -p /tmp/validate/candy
+          cp -r candy/plugin-punktfunk /tmp/validate/candy/plugin-punktfunk
+          printf 'version: 2026.240.1943\ndiscover:\n    - path: candy\n      recursive: true\n' > /tmp/validate/charly.yml
+          cd /tmp/validate && /tmp/charly/bin/charly box validate
+
+      - name: The plugin module builds, vets and tests
+        run: |
+          cd candy/plugin-punktfunk
+          GOWORK=off go build ./...
+          GOWORK=off go vet ./...
+          GOWORK=off go test ./...
+
+      - name: gofmt is clean
+        run: |
+          cd candy/plugin-punktfunk
+          test -z "$(gofmt -l .)" || { echo "gofmt found unformatted files:"; gofmt -l .; exit 1; }
