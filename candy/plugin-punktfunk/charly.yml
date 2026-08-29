@@ -1,0 +1,55 @@
+version: 2026.240.1943
+plugin-punktfunk:
+    candy:
+        version: 2026.241.1845
+        description: |-
+            OUT-OF-TREE charly plugin serving the `punktfunk` check verb — a standalone Go
+            module driving a running punktfunk streaming host through its management REST
+            API (bearer token over HTTPS on 47990), served OUT-OF-PROCESS over go-plugin
+            gRPC via the charly plugin SDK. charly's loader fetches this candy's repo,
+            go-builds the provider binary on the HOST, and serves it via LocalTransport, so
+            an authored `punktfunk:` step dispatches through the provider registry exactly
+            like a built-in.
+
+            The verb both PROBES a host (health, status, diagnostics, compositors, gpus,
+            paired clients, pending devices, library, virtual displays, plugins, hooks,
+            actions) and MANAGES one (arm or disarm pairing, approve or deny a pending
+            device, submit a PIN, rename, set an access preset, unpair, toggle a library
+            scanner, release virtual displays, invoke a power action, end a game). Mutating
+            methods are refused in a `check:` step and must be authored as `run:` steps, so
+            a probe can never silently unpair a device or reboot a machine.
+
+            It is NOT a re-skin of the generic `http:` verb. `http:` already covers URL +
+            status + body/header matchers, and this plugin exists for the three things it
+            structurally cannot do: TOKEN DISCOVERY (the per-host bearer token is generated
+            at first start and lives at ~/.config/punktfunk/mgmt-token INSIDE the venue, so
+            it is read over the reverse channel, not from an authored URL); ENDPOINT
+            RESOLUTION (cc.ResolveEndpoint means one authored step works unchanged against
+            a pod's published port and a VM's forwarded one); and DOMAIN SEMANTICS (methods
+            map to endpoints and return real verdicts, with `json_path:` to assert one
+            field instead of pattern-matching a JSON blob). The `events` method subscribes
+            to the SSE lifecycle stream and waits for N matching events, which is the only
+            way to assert a TRANSITION — a poll of /api/v1/host can observe a state but
+            never that a stream started.
+
+            TLS verification is OFF by default and the flag is spelled `verify_tls` rather
+            than `insecure` on purpose: punktfunk serves a self-signed certificate, and a
+            plain bool cannot distinguish "unset" from "false", so the field is inverted to
+            make the ZERO VALUE the correct default.
+
+            The R10 consumer is a punktfunk-bearing bed (pod or VM) whose check composes
+            this plugin alongside the `punktfunk` candy from opencharly/layer-punktfunk.
+        plugin:
+            source: github.com/opencharly/plugin-punktfunk/candy/plugin-punktfunk
+            providers:
+                - verb:punktfunk
+            primary:
+                punktfunk: method
+        plan:
+            - check: the punktfunk verb dispatches through the provider registry and the host's management API reports itself live (the unauthenticated health route, so the probe works before a bearer token exists)
+              id: punktfunk-verb-dispatches
+              punktfunk: health
+              eventually: 60s
+              retry_interval: 5s
+              context:
+                - runtime
