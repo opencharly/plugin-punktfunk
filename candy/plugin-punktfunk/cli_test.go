@@ -91,7 +91,11 @@ func TestResolveCLICall_ArgvShapes(t *testing.T) {
 // A method that names a host must say so precisely, rather than letting the CLI emit a
 // usage dump the bed author then has to decode.
 func TestResolveCLICall_RequiresHost(t *testing.T) {
-	for _, m := range []string{"pair", "launch", "speed-test", "client-library", "reachable", "open"} {
+	// Every method whose argv names a host must be listed, or it emits a malformed
+	// command instead of the authoring error the map exists to produce. `wake` was
+	// missing exactly that way.
+	for _, m := range []string{"pair", "launch", "speed-test", "client-library",
+		"reachable", "open", "wake", "hosts-add", "hosts-forget"} {
 		if _, err := resolveCLICall(&params.PunktfunkInput{Method: m}); err == nil {
 			t.Errorf("%s without host: expected an authoring error, got nil", m)
 		}

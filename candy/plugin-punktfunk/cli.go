@@ -47,6 +47,7 @@ var cliRequiredField = map[string]string{
 	"reachable":      "host",
 	"hosts-add":      "host",
 	"hosts-forget":   "host",
+	"wake":           "host",
 }
 
 // isCLIMethod reports whether a method is served by the client CLI rather than the
