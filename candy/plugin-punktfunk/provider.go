@@ -274,10 +274,16 @@ func invokeCLI(ctx context.Context, req *pb.InvokeRequest, op *spec.Op, in *para
 func writePinOut(ctx context.Context, exec venueExec, body, path string) error {
 	pin, err := extractJSONPath([]byte(body), "pin")
 	if err != nil {
+		// A pair-arm response that parses but carries no `pin` is the interesting case:
+		// the host answered and simply is not armed. Say that, rather than surfacing a
+		// json_path miss the bed author then has to translate.
+		if json.Valid([]byte(body)) {
+			return fmt.Errorf("punktfunk: pin_out: the host returned no pin — is pairing armed? (%s)", trailer(body))
+		}
 		return fmt.Errorf("punktfunk: pin_out: %w", err)
 	}
 	if strings.TrimSpace(pin) == "" {
-		return fmt.Errorf("punktfunk: pin_out: the host returned no pin (is pairing armed?)")
+		return fmt.Errorf("punktfunk: pin_out: the host returned no pin — is pairing armed?")
 	}
 	script := "umask 077 && mkdir -p " + shellQuote(filepath.Dir(path)) +
 		" && printf %s " + shellQuote(pin) + " > " + shellQuote(path)
