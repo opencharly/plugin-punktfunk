@@ -206,7 +206,13 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 	// prefix runs BEFORE the pipeline, never inside it. Folding the lookup into cmd put it
 	// on the right-hand side of `cat pin | …`, so the PIN was piped into the lookup instead
 	// of into punktfunk and `pair` ran with no stdin at all.
-	prefix := ""
+	// The client keeps its identity and saved-hosts store under $HOME, and the reverse
+	// channel does not set HOME — a bare exec fails with
+	//   client identity: HOME unset: environment variable not found
+	// which the CLI reports as a plain exit 1, outside its documented code set, so it
+	// reads as "something went wrong" rather than "there is no HOME". Derive it from
+	// passwd when the venue's environment did not supply one.
+	prefix := `[ -n "$HOME" ] || export HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"; `
 	if call.ResolveHost != "" {
 		// `pair` needs a literal address. Resolve the peer's name in the venue and
 		// substitute it, so the author writes a member name and the CLI still gets what
@@ -216,7 +222,7 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		if port == "" {
 			port = defaultNativePort
 		}
-		prefix = "PF_IP=$(getent hosts " + shellQuote(name) + " | awk '{print $1; exit}'); " +
+		prefix += "PF_IP=$(getent hosts " + shellQuote(name) + " | awk '{print $1; exit}'); " +
 			"[ -n \"$PF_IP\" ] || { echo \"punktfunk: cannot resolve " + name + "\" >&2; exit 2; }; "
 		cmd = strings.Replace(cmd, shellQuote(call.ResolveHost), "\"$PF_IP:"+port+"\"", 1)
 	}

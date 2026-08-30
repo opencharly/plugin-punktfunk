@@ -265,17 +265,43 @@ func TestPinFileIsPipedIntoPunktfunkNotTheLookup(t *testing.T) {
 	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
 		t.Fatal(err)
 	}
-	pipe := strings.Index(fe.script, "|")
+	// Anchor on the client invocation itself, not on pipe positions: the HOME fallback and
+	// the address lookup each contain their own `|`, so "the first pipe" is not the one that
+	// feeds punktfunk. (An earlier version of this assertion keyed on the first pipe and
+	// broke the moment a second pipeline appeared ahead of it.)
+	invocation := strings.Index(fe.script, "'punktfunk'")
 	lookup := strings.Index(fe.script, "getent hosts")
-	if pipe < 0 || lookup < 0 {
-		t.Fatalf("expected both a pipe and a lookup: %s", fe.script)
+	catPipe := strings.Index(fe.script, "cat '/pfshare/pin' |")
+	if invocation < 0 || lookup < 0 || catPipe < 0 {
+		t.Fatalf("expected a lookup, a cat pipe and the invocation: %s", fe.script)
 	}
-	if lookup > pipe {
-		t.Errorf("the address lookup must run BEFORE the pipeline, or the PIN feeds it "+
+	if lookup > catPipe {
+		t.Errorf("the address lookup must run BEFORE the PIN pipeline, or the PIN feeds it "+
 			"instead of punktfunk: %s", fe.script)
 	}
-	// And what follows the pipe must be the client invocation itself.
-	if !strings.Contains(fe.script[pipe:], "'pair'") {
-		t.Errorf("the pipe must feed the punktfunk invocation: %s", fe.script)
+	if catPipe > invocation {
+		t.Errorf("the PIN pipe must immediately feed the punktfunk invocation: %s", fe.script)
+	}
+}
+
+// The client stores its identity and saved hosts under $HOME, and charly's reverse channel
+// does not set it. A bare exec fails with "client identity: HOME unset: environment variable
+// not found" — reported as a plain exit 1, outside the CLI's documented code set, so it reads
+// as a generic failure rather than a missing variable. Every client invocation therefore
+// derives HOME when the venue did not supply one.
+func TestEveryClientCallEnsuresHome(t *testing.T) {
+	for _, m := range []string{"hosts-list", "profiles-list", "speed-test", "pair", "launch"} {
+		in := &params.PunktfunkInput{Method: m, Host: "peer", PinFile: "/pfshare/pin"}
+		call, err := resolveCLICall(in)
+		if err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+		fe := &fakeExec{}
+		if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+		if !strings.HasPrefix(fe.script, `[ -n "$HOME" ] || export HOME=`) {
+			t.Errorf("%s: script must ensure HOME first: %s", m, fe.script)
+		}
 	}
 }
