@@ -166,6 +166,8 @@ func requireField(in *params.PunktfunkInput, field string) error {
 		got = in.ProviderID
 	case "pin":
 		got = in.Pin
+	case "host":
+		got = in.Host
 	}
 	if strings.TrimSpace(got) == "" {
 		return fmt.Errorf("punktfunk: %s needs `%s`", in.Method, field)

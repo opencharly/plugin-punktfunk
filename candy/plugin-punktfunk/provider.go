@@ -60,6 +60,15 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 			"punktfunk: %s requires a running host (skip under charly check box)", method))
 	}
 
+	// Client methods are served by the headless `punktfunk` CLI in the venue, not by a
+	// host management API, so they resolve and dispatch on their own path: no bearer
+	// token, no loopback address, no 47990. Branching here rather than inside
+	// resolveCall keeps the two contracts (HTTP call vs argv + exit code) from bleeding
+	// into each other.
+	if isCLIMethod(method) {
+		return invokeCLI(ctx, req, &op, &in)
+	}
+
 	call, err := resolveCall(&in)
 	if err != nil {
 		return sdk.ResultJSON("fail", err.Error())
@@ -215,4 +224,31 @@ func trailer(s string) string {
 		s = s[:200] + "…"
 	}
 	return ": " + s
+}
+
+// invokeCLI serves the client half of the verb: resolve the method to a `punktfunk` CLI
+// invocation, run it inside the venue, and turn its exit code into a verdict.
+//
+// It mirrors the API path's guarantees deliberately — the same mutating-in-a-check
+// refusal, the same single broker dial, the same json_path extraction — so an author does
+// not have to remember which half of the verb they are using.
+func invokeCLI(ctx context.Context, req *pb.InvokeRequest, op *spec.Op, in *params.PunktfunkInput) (*pb.InvokeReply, error) {
+	method := in.Method
+	call, err := resolveCLICall(in)
+	if err != nil {
+		return sdk.ResultJSON("fail", err.Error())
+	}
+	if call.Mutating && op.IntentDo == string(spec.DoAssert) {
+		return sdk.ResultJSON("fail", fmt.Sprintf(
+			"punktfunk: %s changes client or host state and must be authored as a `run:` step, not a `check:` step", method))
+	}
+	cc, err := sdk.NewCheckContext(req.GetExecutorBrokerId(), req.GetEnvJson())
+	if err != nil {
+		return sdk.ResultJSON("fail", fmt.Sprintf("punktfunk: %s: %v", method, err))
+	}
+	out, runErr := runCLI(ctx, cc.Exec(), in, call)
+	if runErr == nil && in.JSONPath != "" {
+		out, runErr = extractJSONPath([]byte(out), in.JSONPath)
+	}
+	return sdk.VerbVerdict("punktfunk", method, out, runErr, op, false)
 }

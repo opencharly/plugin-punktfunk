@@ -24,6 +24,25 @@ type PunktfunkInput struct {
 	// state and belong in `run:` steps, not `check:` steps.
 	Method string `json:"method"`
 
+	// host — the client-side `<host-ref>`: a saved host name, or host[:port]. Required
+	// by every client method that names a host.
+	Host string `json:"host,omitempty"`
+
+	// probe — hosts-list only: add the live reachability check (`--probe`).
+	Probe bool `json:"probe,omitempty"`
+
+	// game — launch only: stream directly into a specific game id (`--game`).
+	Game string `json:"game,omitempty"`
+
+	// auto_approve — open only: `--yes`, auto-approving an unknown host. Documented
+	// for automation; it trades a trust prompt for unattended operation, so it is opt-in
+	// per step rather than implied.
+	AutoApprove bool `json:"auto_approve,omitempty"`
+
+	// client_bin — override the client binary. The Flatpak build is not on PATH and is
+	// reached as `flatpak run --command=punktfunk io.unom.Punktfunk`.
+	ClientBin string `json:"client_bin,omitempty"`
+
 	// port — the in-venue management API port. Default 47990. Resolved to a
 	// host-reachable address by the host's generic endpoint reverse-leg, so the same
 	// authored step works against a pod's published port and a VM's forwarded one.
