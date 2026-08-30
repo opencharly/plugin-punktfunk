@@ -203,6 +203,10 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		quoted = append(quoted, shellQuote(a))
 	}
 	cmd := shellQuote(clientBin(in)) + " " + strings.Join(quoted, " ")
+	// prefix runs BEFORE the pipeline, never inside it. Folding the lookup into cmd put it
+	// on the right-hand side of `cat pin | …`, so the PIN was piped into the lookup instead
+	// of into punktfunk and `pair` ran with no stdin at all.
+	prefix := ""
 	if call.ResolveHost != "" {
 		// `pair` needs a literal address. Resolve the peer's name in the venue and
 		// substitute it, so the author writes a member name and the CLI still gets what
@@ -212,15 +216,16 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		if port == "" {
 			port = defaultNativePort
 		}
-		lookup := "PF_IP=$(getent hosts " + shellQuote(name) + " | awk '{print $1; exit}'); " +
+		prefix = "PF_IP=$(getent hosts " + shellQuote(name) + " | awk '{print $1; exit}'); " +
 			"[ -n \"$PF_IP\" ] || { echo \"punktfunk: cannot resolve " + name + "\" >&2; exit 2; }; "
-		cmd = lookup + strings.Replace(cmd, shellQuote(call.ResolveHost), "\"$PF_IP:"+port+"\"", 1)
+		cmd = strings.Replace(cmd, shellQuote(call.ResolveHost), "\"$PF_IP:"+port+"\"", 1)
 	}
-	script := cmd
+	script := prefix + cmd
 	if call.StdinFile != "" {
 		// The PIN never reaches this process: the venue's own shell reads the file and
 		// pipes it. A missing file fails loudly rather than pairing with an empty PIN.
-		script = "test -s " + shellQuote(call.StdinFile) + " && cat " + shellQuote(call.StdinFile) + " | " + cmd
+		// The prefix stays OUTSIDE the pipeline — see above.
+		script = prefix + "test -s " + shellQuote(call.StdinFile) + " && cat " + shellQuote(call.StdinFile) + " | " + cmd
 		stdout, stderr, exit, err := exec.RunCapture(ctx, script)
 		return cliResult(in, stdout, stderr, exit, err)
 	}
@@ -228,7 +233,7 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		// printf, not echo: no trailing newline surprises, and the value stays out of
 		// the process list because it is an argument to printf in the same shell rather
 		// than to punktfunk.
-		script = "printf %s " + shellQuote(call.Stdin) + " | " + cmd
+		script = prefix + "printf %s " + shellQuote(call.Stdin) + " | " + cmd
 	}
 	stdout, stderr, exit, err := exec.RunCapture(ctx, script)
 	return cliResult(in, stdout, stderr, exit, err)

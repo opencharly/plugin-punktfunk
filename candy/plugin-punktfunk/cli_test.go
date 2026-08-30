@@ -31,7 +31,9 @@ func TestPinNeverReachesArgv(t *testing.T) {
 	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
 		t.Fatal(err)
 	}
-	cmd := fe.script[strings.Index(fe.script, "|")+1:] // the punktfunk invocation itself
+	// The punktfunk invocation is what follows the LAST pipe — the address lookup adds an
+	// earlier `getent … | awk` pipeline, so the first pipe is not the interesting one.
+	cmd := fe.script[strings.LastIndex(fe.script, "|")+1:]
 	if strings.Contains(cmd, "4271") {
 		t.Errorf("PIN reached the punktfunk argv in the emitted script: %s", fe.script)
 	}
@@ -40,7 +42,7 @@ func TestPinNeverReachesArgv(t *testing.T) {
 	if !strings.Contains(fe.script, "'--pin' '-'") {
 		t.Errorf("expected the documented stdin form `--pin -`: %s", fe.script)
 	}
-	if !strings.HasPrefix(fe.script, "printf %s ") {
+	if !strings.Contains(fe.script, "printf %s '4271' | ") {
 		t.Errorf("PIN must be piped in, not echoed or inlined: %s", fe.script)
 	}
 }
@@ -246,5 +248,34 @@ func TestOnlyPairResolvesTheHost(t *testing.T) {
 		if call.ResolveHost != "" {
 			t.Errorf("%s must not resolve the host itself, got %q", m, call.ResolveHost)
 		}
+	}
+}
+
+// The PIN must be piped into punktfunk itself, not into the address lookup. Folding the
+// lookup into the command put it on the right-hand side of `cat pin | …`, so the PIN fed
+// `getent` and `pair` ran with no stdin — which the host reported as a failed connection,
+// several layers away from the actual mistake.
+func TestPinFileIsPipedIntoPunktfunkNotTheLookup(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "pair", Host: "peer-host", PinFile: "/pfshare/pin"}
+	call, err := resolveCLICall(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatal(err)
+	}
+	pipe := strings.Index(fe.script, "|")
+	lookup := strings.Index(fe.script, "getent hosts")
+	if pipe < 0 || lookup < 0 {
+		t.Fatalf("expected both a pipe and a lookup: %s", fe.script)
+	}
+	if lookup > pipe {
+		t.Errorf("the address lookup must run BEFORE the pipeline, or the PIN feeds it "+
+			"instead of punktfunk: %s", fe.script)
+	}
+	// And what follows the pipe must be the client invocation itself.
+	if !strings.Contains(fe.script[pipe:], "'pair'") {
+		t.Errorf("the pipe must feed the punktfunk invocation: %s", fe.script)
 	}
 }
