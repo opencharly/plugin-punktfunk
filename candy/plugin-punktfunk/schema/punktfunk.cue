@@ -24,7 +24,34 @@
 		"clients" | "rename" | "access" | "unpair" |
 		"library" | "scanners" | "scanner-toggle" |
 		"display-state" | "display-monitors" | "display-settings" | "display-release" |
-		"actions" | "action-invoke" | "end-game" | "events"
+		"actions" | "action-invoke" | "end-game" | "events" |
+
+		// CLIENT methods — served by the headless `punktfunk` CLI that every Linux
+		// client package ships, not by the host management API. They run inside the
+		// venue where punktfunk-client is installed, so a fleet bed drives BOTH sides
+		// of a stream in charly verbs instead of shelling out.
+		"hosts-list" | "hosts-add" | "hosts-forget" |
+		"pair" | "launch" | "client-library" | "speed-test" |
+		"open" | "wake" | "reachable" | "profiles-list" | "client-reset"
+
+	// host — the client-side `<host-ref>`: a saved host name, or host[:port]. Required
+	// by every client method that names a host.
+	host?: string
+
+	// probe — hosts-list only: add the live reachability check (`--probe`).
+	probe?: bool
+
+	// game — launch only: stream directly into a specific game id (`--game`).
+	game?: string
+
+	// auto_approve — open only: `--yes`, auto-approving an unknown host. Documented
+	// for automation; it trades a trust prompt for unattended operation, so it is opt-in
+	// per step rather than implied.
+	auto_approve?: bool @go(AutoApprove)
+
+    // client_bin — override the client binary. The Flatpak build is not on PATH and is
+	// reached as `flatpak run --command=punktfunk io.unom.Punktfunk`.
+	client_bin?: string @go(ClientBin)
 
 	// port — the in-venue management API port. Default 47990. Resolved to a
 	// host-reachable address by the host's generic endpoint reverse-leg, so the same
