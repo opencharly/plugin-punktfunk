@@ -39,6 +39,20 @@ type PunktfunkInput struct {
 	// per step rather than implied.
 	AutoApprove bool `json:"auto_approve,omitempty"`
 
+	// pin_out — pair-arm only: write the PIN the host generates to this path INSIDE the
+	// venue. The host GENERATES the pairing PIN and ignores a caller-supplied one (verified
+	// against 0.33.0-1: POST pair/arm with {"pin":"424242"} returns a different, host-chosen
+	// pin), and charly has no mechanism to carry a step's output into another step's input.
+	// So a fleet bed that pairs two members needs the PIN on disk, on a path both members
+	// mount — the faithful automation of a human reading the PIN off one screen and typing
+	// it into the other. Written with 0600.
+	PinOut string `json:"pin_out,omitempty"`
+
+	// pin_file — pair only: read the PIN from this path inside the venue instead of `pin:`.
+	// Pairs with pin_out. Preferred over an inline `pin:` for the same reason token_file is
+	// preferred over an inline token: the value never appears in the manifest.
+	PinFile string `json:"pin_file,omitempty"`
+
 	// client_bin — override the client binary. The Flatpak build is not on PATH and is
 	// reached as `flatpak run --command=punktfunk io.unom.Punktfunk`.
 	ClientBin string `json:"client_bin,omitempty"`

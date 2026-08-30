@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -114,7 +115,12 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 		}
 	}
 
+	applyDefaultWriteBody(&call)
+
 	out, runErr := doCall(ctx, cc, addr, token, &in, call)
+	if runErr == nil && in.PinOut != "" {
+		runErr = writePinOut(ctx, cc.Exec(), out, in.PinOut)
+	}
 	return sdk.VerbVerdict("punktfunk", method, out, runErr, &op, false)
 }
 
@@ -251,4 +257,41 @@ func invokeCLI(ctx context.Context, req *pb.InvokeRequest, op *spec.Op, in *para
 		out, runErr = extractJSONPath([]byte(out), in.JSONPath)
 	}
 	return sdk.VerbVerdict("punktfunk", method, out, runErr, op, false)
+}
+
+// writePinOut extracts the host-generated pairing PIN from a pair-arm response and writes it
+// into the venue at path, 0600.
+//
+// It exists because the two halves of a pairing live in different places and charly has no
+// way to carry a value between steps: the HOST generates the PIN (it ignores a caller-supplied
+// one) and only the CLIENT can use it. A fleet bed mounts one path into both members, so this
+// is the automation of a human reading the PIN off one screen and typing it into the other.
+//
+// Unlike the management token, the PIN is written through the venue shell rather than over
+// stdin. That is a deliberate, bounded trade: a PIN is single-use and expires in ~2 minutes
+// (expires_in_secs: 119 on 0.33.0-1), where a token is long-lived and high-value — which is
+// why the token still never touches argv (see transport.go).
+func writePinOut(ctx context.Context, exec venueExec, body, path string) error {
+	pin, err := extractJSONPath([]byte(body), "pin")
+	if err != nil {
+		// A pair-arm response that parses but carries no `pin` is the interesting case:
+		// the host answered and simply is not armed. Say that, rather than surfacing a
+		// json_path miss the bed author then has to translate.
+		if json.Valid([]byte(body)) {
+			return fmt.Errorf("punktfunk: pin_out: the host returned no pin — is pairing armed? (%s)", trailer(body))
+		}
+		return fmt.Errorf("punktfunk: pin_out: %w", err)
+	}
+	if strings.TrimSpace(pin) == "" {
+		return fmt.Errorf("punktfunk: pin_out: the host returned no pin — is pairing armed?")
+	}
+	script := "umask 077 && mkdir -p " + shellQuote(filepath.Dir(path)) +
+		" && printf %s " + shellQuote(pin) + " > " + shellQuote(path)
+	if _, stderr, exit, rerr := exec.RunCapture(ctx, script); rerr != nil || exit != 0 {
+		if rerr != nil {
+			return fmt.Errorf("punktfunk: pin_out %s: %w", path, rerr)
+		}
+		return fmt.Errorf("punktfunk: pin_out %s: exit %d: %s", path, exit, trailer(stderr))
+	}
+	return nil
 }

@@ -31,7 +31,9 @@ func TestPinNeverReachesArgv(t *testing.T) {
 	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
 		t.Fatal(err)
 	}
-	cmd := fe.script[strings.Index(fe.script, "|")+1:] // the punktfunk invocation itself
+	// The punktfunk invocation is what follows the LAST pipe — the address lookup adds an
+	// earlier `getent … | awk` pipeline, so the first pipe is not the interesting one.
+	cmd := fe.script[strings.LastIndex(fe.script, "|")+1:]
 	if strings.Contains(cmd, "4271") {
 		t.Errorf("PIN reached the punktfunk argv in the emitted script: %s", fe.script)
 	}
@@ -40,7 +42,7 @@ func TestPinNeverReachesArgv(t *testing.T) {
 	if !strings.Contains(fe.script, "'--pin' '-'") {
 		t.Errorf("expected the documented stdin form `--pin -`: %s", fe.script)
 	}
-	if !strings.HasPrefix(fe.script, "printf %s ") {
+	if !strings.Contains(fe.script, "printf %s '4271' | ") {
 		t.Errorf("PIN must be piped in, not echoed or inlined: %s", fe.script)
 	}
 }
@@ -160,5 +162,191 @@ func TestClientBinOverride(t *testing.T) {
 	custom := "flatpak run --command=punktfunk io.unom.Punktfunk"
 	if got := clientBin(&params.PunktfunkInput{ClientBin: custom}); got != custom {
 		t.Errorf("override ignored: %q", got)
+	}
+}
+
+// pin_file must reach the CLI on stdin, read by the venue's own shell — the PIN never enters
+// argv, and never passes through this process at all.
+func TestPinFileNeverReachesArgv(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "pair", Host: "h", PinFile: "/pfshare/pin"}
+	call, err := resolveCLICall(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.StdinFile != "/pfshare/pin" {
+		t.Errorf("StdinFile = %q, want the pin_file path", call.StdinFile)
+	}
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fe.script, "cat '/pfshare/pin' |") {
+		t.Errorf("the venue shell must pipe the file in: %s", fe.script)
+	}
+	if !strings.Contains(fe.script, "is missing or empty") {
+		t.Errorf("a missing or empty pin file must fail with a NAMED error, not a silent "+
+			"exit 1 indistinguishable from the client failing: %s", fe.script)
+	}
+	if !strings.Contains(fe.script, "'--pin' '-'") {
+		t.Errorf("expected the documented stdin form: %s", fe.script)
+	}
+}
+
+// An inline pin still works, and pin_file wins when both are given — the file is the one a
+// fleet bed uses, and silently preferring the manifest value would be the wrong default.
+func TestPinFileWinsOverInlinePin(t *testing.T) {
+	call, err := resolveCLICall(&params.PunktfunkInput{
+		Method: "pair", Host: "h", Pin: "1234", PinFile: "/pfshare/pin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.Stdin != "" {
+		t.Errorf("inline pin must not be used when pin_file is set, got Stdin=%q", call.Stdin)
+	}
+	if call.StdinFile != "/pfshare/pin" {
+		t.Errorf("StdinFile = %q", call.StdinFile)
+	}
+}
+
+// `pair` rejects a hostname with InvalidArg("host:port") even where `reachable` accepts the
+// same name (verified against 0.33.0-1). The verb therefore resolves the peer in the venue so
+// a bed can keep naming its peer by member name.
+func TestPairResolvesHostToAnAddress(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "pair", Host: "charly-punktfunk-fleet-host", PinFile: "/pfshare/pin"}
+	call, err := resolveCLICall(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.ResolveHost != "charly-punktfunk-fleet-host" {
+		t.Fatalf("ResolveHost = %q", call.ResolveHost)
+	}
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fe.script, "getent hosts 'charly-punktfunk-fleet-host'") {
+		t.Errorf("the peer must be resolved in the venue: %s", fe.script)
+	}
+	if !strings.Contains(fe.script, `"$PF_IP:9777"`) {
+		t.Errorf("the resolved address must carry the default native port: %s", fe.script)
+	}
+	if strings.Contains(fe.script, "pair' 'charly-punktfunk-fleet-host'") {
+		t.Errorf("the bare name must not reach the CLI: %s", fe.script)
+	}
+	if !strings.Contains(fe.script, "cannot resolve") {
+		t.Errorf("an unresolvable peer must fail with the name, not the CLI's opaque error: %s", fe.script)
+	}
+}
+
+// EVERY host-taking method resolves the peer, not just `pair`. `pair` saves the host under
+// the ADDRESS it paired with, so a later `speed-test <name>` is told the name "isn't a saved
+// host" — the saved key and every later reference have to agree. An earlier version of this
+// test asserted the opposite (only pair resolves), and the bed failed exactly that way.
+func TestEveryHostTakingMethodResolvesThePeer(t *testing.T) {
+	for _, m := range []string{"pair", "speed-test", "reachable", "launch", "client-library", "open", "wake"} {
+		call, err := resolveCLICall(&params.PunktfunkInput{Method: m, Host: "peer"})
+		if err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+		if call.ResolveHost != "peer" {
+			t.Errorf("%s must resolve the peer, got %q", m, call.ResolveHost)
+		}
+	}
+}
+
+// Methods that name no host must not acquire a lookup.
+func TestHostlessMethodsDoNotResolve(t *testing.T) {
+	for _, m := range []string{"hosts-list", "profiles-list", "client-reset"} {
+		call, err := resolveCLICall(&params.PunktfunkInput{Method: m})
+		if err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+		if call.ResolveHost != "" {
+			t.Errorf("%s takes no host, got ResolveHost=%q", m, call.ResolveHost)
+		}
+	}
+}
+
+// The PIN must be piped into punktfunk itself, not into the address lookup. Folding the
+// lookup into the command put it on the right-hand side of `cat pin | …`, so the PIN fed
+// `getent` and `pair` ran with no stdin — which the host reported as a failed connection,
+// several layers away from the actual mistake.
+func TestPinFileIsPipedIntoPunktfunkNotTheLookup(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "pair", Host: "peer-host", PinFile: "/pfshare/pin"}
+	call, err := resolveCLICall(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatal(err)
+	}
+	// Anchor on the client invocation itself, not on pipe positions: the HOME fallback and
+	// the address lookup each contain their own `|`, so "the first pipe" is not the one that
+	// feeds punktfunk. (An earlier version of this assertion keyed on the first pipe and
+	// broke the moment a second pipeline appeared ahead of it.)
+	invocation := strings.Index(fe.script, "'punktfunk'")
+	lookup := strings.Index(fe.script, "getent hosts")
+	catPipe := strings.Index(fe.script, "cat '/pfshare/pin' |")
+	if invocation < 0 || lookup < 0 || catPipe < 0 {
+		t.Fatalf("expected a lookup, a cat pipe and the invocation: %s", fe.script)
+	}
+	if lookup > catPipe {
+		t.Errorf("the address lookup must run BEFORE the PIN pipeline, or the PIN feeds it "+
+			"instead of punktfunk: %s", fe.script)
+	}
+	if catPipe > invocation {
+		t.Errorf("the PIN pipe must immediately feed the punktfunk invocation: %s", fe.script)
+	}
+}
+
+// The client stores its identity and saved hosts under $HOME, and charly's reverse channel
+// does not set it. A bare exec fails with "client identity: HOME unset: environment variable
+// not found" — reported as a plain exit 1, outside the CLI's documented code set, so it reads
+// as a generic failure rather than a missing variable. Every client invocation therefore
+// derives HOME when the venue did not supply one.
+func TestEveryClientCallEnsuresHome(t *testing.T) {
+	for _, m := range []string{"hosts-list", "profiles-list", "speed-test", "pair", "launch"} {
+		in := &params.PunktfunkInput{Method: m, Host: "peer", PinFile: "/pfshare/pin"}
+		call, err := resolveCLICall(in)
+		if err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+		fe := &fakeExec{}
+		if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+			t.Fatalf("%s: %v", m, err)
+		}
+		if !strings.HasPrefix(fe.script, `[ -n "$HOME" ] || export HOME=`) {
+			t.Errorf("%s: script must ensure HOME first: %s", m, fe.script)
+		}
+	}
+}
+
+// The client reports its failures on STDOUT ("Pairing failed: InvalidArg(…)", "client
+// identity: HOME unset…"). Reporting only stderr discarded the one line that says what went
+// wrong and left a bare "exit 1" to be re-diagnosed by hand — which is exactly what happened,
+// repeatedly, while debugging this bed.
+func TestClientFailureSurfacesItsOwnMessage(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "pair", Host: "peer", Pin: "1234"}
+	call, _ := resolveCLICall(in)
+	fe := &fakeExec{exit: 1, stdout: "Pairing failed: InvalidArg(\"host:port\")\n"}
+	_, err := runCLI(context.Background(), fe, in, call)
+	if err == nil {
+		t.Fatal("a non-zero exit must be an error")
+	}
+	if !strings.Contains(err.Error(), "InvalidArg") {
+		t.Errorf("the client's own message must reach the verdict, got: %v", err)
+	}
+}
+
+// stderr still wins when both are present — it is the conventional channel.
+func TestStderrPreferredOverStdout(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "speed-test", Host: "peer"}
+	call, _ := resolveCLICall(in)
+	fe := &fakeExec{exit: 2, stdout: "noise", stderr: "the real error"}
+	_, err := runCLI(context.Background(), fe, in, call)
+	if err == nil || !strings.Contains(err.Error(), "the real error") {
+		t.Errorf("stderr should be preferred, got: %v", err)
 	}
 }
