@@ -253,6 +253,9 @@ func invokeCLI(ctx context.Context, req *pb.InvokeRequest, op *spec.Op, in *para
 		return sdk.ResultJSON("fail", fmt.Sprintf("punktfunk: %s: %v", method, err))
 	}
 	out, runErr := runCLI(ctx, cc.Exec(), in, call)
+	if method == "stream-probe" {
+		out, runErr = streamProbeVerdict(out, runErr)
+	}
 	if runErr == nil && in.JSONPath != "" {
 		out, runErr = extractJSONPath([]byte(out), in.JSONPath)
 	}
@@ -294,4 +297,27 @@ func writePinOut(ctx context.Context, exec venueExec, body, path string) error {
 		return fmt.Errorf("punktfunk: pin_out %s: exit %d: %s", path, exit, trailer(stderr))
 	}
 	return nil
+}
+
+// streamProbeVerdict turns a bounded session's tracing into the one thing the bed is
+// asserting: did video actually decode. A session that carried frames is a PASS even
+// though `timeout` killed it, and a session that connected but decoded nothing is a
+// FAILURE even though every control-plane check around it passes — which is exactly the
+// state that let a fleet bed report green while punktfunk could not stream at all.
+func streamProbeVerdict(out string, runErr error) (string, error) {
+	if runErr != nil {
+		return out, runErr
+	}
+	frames, sawFirst := streamProbeFrames(out)
+	switch {
+	case frames > 0:
+		return fmt.Sprintf("streamed: %d frames decoded", frames), nil
+	case sawFirst:
+		// `timeout` can kill a healthy session before it prints a total. "First frame
+		// decoded" is still proof that video arrived and the decoder ran.
+		return "streamed: first frame decoded (session bounded before it reported a total)", nil
+	}
+	// Carry the client's own words: they distinguish a refused codec from an unreachable
+	// host from a renderer that never started.
+	return "", fmt.Errorf("punktfunk: stream-probe: no frame decoded — the session carried no video.\nclient said:\n%s", out)
 }
