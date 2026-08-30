@@ -48,7 +48,11 @@ plugin-punktfunk:
         plan:
             - check: the punktfunk verb dispatches through the provider registry and the host's management API reports itself live (the unauthenticated health route, so the probe works before a bearer token exists)
               id: punktfunk-verb-dispatches
-              punktfunk: health
+              # MAP form, not the scalar shorthand: plugin.primary: is ignored for an
+              # @github-pinned candy, and the shorthand then fails the parse for every bed
+              # sharing the project closure (opencharly/charly#471).
+              punktfunk:
+                method: health
               eventually: 60s
               retry_interval: 5s
               context:
@@ -129,7 +133,7 @@ punktfunk-skill:
 
             | Field | Meaning |
             |---|---|
-            | `method` | the operation (also the scalar-sugar primary: `punktfunk: status`) |
+            | `method` | the operation. Author it in MAP form (`punktfunk: {method: status}`) - see the note below on scalar shorthand |
             | `port` | management API port (default 47990) |
             | `token` / `token_file` | override the bearer; default is `~/.config/punktfunk/mgmt-token` in the venue |
             | `verify_tls` | require a verifiable chain. **Default off** — punktfunk serves a self-signed cert. Named this way (not `insecure`) so the ZERO VALUE is the correct default, which a bool could not express otherwise. |
@@ -138,12 +142,39 @@ punktfunk-skill:
             | `kinds` / `count` / `event_timeout` | the `events` subscription window |
             | `json_path` | dotted path into the response; stdout becomes that value |
 
+            ## Author in MAP form, not scalar shorthand
+
+            ```yaml
+            punktfunk:                 # correct
+              method: status
+
+            punktfunk: status          # FAILS the project parse today
+            ```
+
+            The plugin declares `plugin.primary: {punktfunk: method}`, which is supposed to
+            make the scalar shorthand work before any plugin connects. It does when the
+            candy is discovered locally, and is **silently ignored when the candy comes from
+            an `@github` ref** — which is how every real consumer pins it. The parse then
+            rejects the step:
+
+            ```
+            plugin verb "punktfunk" takes a MAP input
+            (it declares no primary field for the scalar shorthand)
+            ```
+
+            That failure is **not local to the offending step**: it blocks the parse for
+            every bed sharing the project closure. Authoring `punktfunk: health` in one bed
+            took down three unrelated beds until it was rewritten.
+
+            Tracked as opencharly/charly#471. Until it is fixed, always use the map form.
+
             ## Examples
 
             ```yaml
             # Liveness, before any token exists.
             - check: the host's management API reports itself live
-              punktfunk: health
+              punktfunk:
+                method: health
               stdout: [{contains: '"status":"ok"'}]
               eventually: 90s
               retry_interval: 5s
@@ -159,7 +190,8 @@ punktfunk-skill:
 
             # Managing is a run: step, never a check:.
             - run: arm native pairing so a device can enrol
-              punktfunk: pair-arm
+              punktfunk:
+                method: pair-arm
 
             # Wait for a TRANSITION rather than polling a state.
             - check: a stream actually started
