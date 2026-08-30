@@ -162,3 +162,89 @@ func TestClientBinOverride(t *testing.T) {
 		t.Errorf("override ignored: %q", got)
 	}
 }
+
+// pin_file must reach the CLI on stdin, read by the venue's own shell — the PIN never enters
+// argv, and never passes through this process at all.
+func TestPinFileNeverReachesArgv(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "pair", Host: "h", PinFile: "/pfshare/pin"}
+	call, err := resolveCLICall(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.StdinFile != "/pfshare/pin" {
+		t.Errorf("StdinFile = %q, want the pin_file path", call.StdinFile)
+	}
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fe.script, "cat '/pfshare/pin' |") {
+		t.Errorf("the venue shell must pipe the file in: %s", fe.script)
+	}
+	if !strings.Contains(fe.script, "test -s '/pfshare/pin'") {
+		t.Errorf("a missing or empty pin file must fail loudly, not pair with an empty PIN: %s", fe.script)
+	}
+	if !strings.Contains(fe.script, "'--pin' '-'") {
+		t.Errorf("expected the documented stdin form: %s", fe.script)
+	}
+}
+
+// An inline pin still works, and pin_file wins when both are given — the file is the one a
+// fleet bed uses, and silently preferring the manifest value would be the wrong default.
+func TestPinFileWinsOverInlinePin(t *testing.T) {
+	call, err := resolveCLICall(&params.PunktfunkInput{
+		Method: "pair", Host: "h", Pin: "1234", PinFile: "/pfshare/pin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.Stdin != "" {
+		t.Errorf("inline pin must not be used when pin_file is set, got Stdin=%q", call.Stdin)
+	}
+	if call.StdinFile != "/pfshare/pin" {
+		t.Errorf("StdinFile = %q", call.StdinFile)
+	}
+}
+
+// `pair` rejects a hostname with InvalidArg("host:port") even where `reachable` accepts the
+// same name (verified against 0.33.0-1). The verb therefore resolves the peer in the venue so
+// a bed can keep naming its peer by member name.
+func TestPairResolvesHostToAnAddress(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "pair", Host: "charly-punktfunk-fleet-host", PinFile: "/pfshare/pin"}
+	call, err := resolveCLICall(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.ResolveHost != "charly-punktfunk-fleet-host" {
+		t.Fatalf("ResolveHost = %q", call.ResolveHost)
+	}
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fe.script, "getent hosts 'charly-punktfunk-fleet-host'") {
+		t.Errorf("the peer must be resolved in the venue: %s", fe.script)
+	}
+	if !strings.Contains(fe.script, `"$PF_IP:9777"`) {
+		t.Errorf("the resolved address must carry the default native port: %s", fe.script)
+	}
+	if strings.Contains(fe.script, "pair' 'charly-punktfunk-fleet-host'") {
+		t.Errorf("the bare name must not reach the CLI: %s", fe.script)
+	}
+	if !strings.Contains(fe.script, "cannot resolve") {
+		t.Errorf("an unresolvable peer must fail with the name, not the CLI's opaque error: %s", fe.script)
+	}
+}
+
+// Only `pair` needs this. speed-test and friends take the name as authored.
+func TestOnlyPairResolvesTheHost(t *testing.T) {
+	for _, m := range []string{"speed-test", "reachable", "launch", "client-library"} {
+		call, err := resolveCLICall(&params.PunktfunkInput{Method: m, Host: "peer"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if call.ResolveHost != "" {
+			t.Errorf("%s must not resolve the host itself, got %q", m, call.ResolveHost)
+		}
+	}
+}

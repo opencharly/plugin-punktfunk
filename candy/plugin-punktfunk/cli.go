@@ -22,6 +22,9 @@ import (
 // `flatpak run --command=punktfunk io.unom.Punktfunk`, which is not on PATH.
 const defaultClientBin = "punktfunk"
 
+// defaultNativePort is the punktfunk/1 control port; the CLI documents it as the default.
+const defaultNativePort = "9777"
+
 // cliCall is a resolved client-CLI invocation.
 type cliCall struct {
 	// Args are appended to the client binary, already shell-quoted by the caller.
@@ -30,6 +33,13 @@ type cliCall struct {
 	// `--pin <value>` as visible in the process list and `--pin -` as the scripting
 	// form, so the value never becomes an argument.
 	Stdin string
+	// ResolveHost, when set, names a peer whose ADDRESS must be looked up in the venue and
+	// substituted into Args before the call. `pair` rejects a hostname outright.
+	ResolveHost string
+	// StdinFile pipes a file's contents in instead of a literal. Used for the PIN when it
+	// arrives on disk (a fleet bed's shared path), so the value never passes through the
+	// manifest, the plugin's memory, or argv — `cat` feeds the pipe directly.
+	StdinFile string
 	// Mutating marks a call that changes client or host state (enrolling, launching,
 	// forgetting). Same contract as apiCall.Mutating: these belong in `run:` steps, so
 	// a `check:` can never silently pair or tear down a session.
@@ -88,11 +98,26 @@ func resolveCLICall(in *params.PunktfunkInput) (cliCall, error) {
 		return cliCall{Args: []string{"hosts", "forget", hostRef}, Mutating: true}, nil
 
 	case "pair":
-		// `--pin -` reads the PIN from stdin. When no PIN is supplied the call is the
-		// console-approval flow: the client requests, an operator (or a `punktfunk:
-		// approve` step on the host) approves.
+		// `--pin -` reads the PIN from stdin. When no PIN is supplied the CLI refuses
+		// unattended ("no --pin and no terminal to ask on", exit 6) — console approval is
+		// a GUI flow, not a scriptable one, so an automated bed must supply a PIN.
+		//
+		// hostRef is resolved to a literal ADDRESS below: `pair` rejects a hostname with
+		// InvalidArg("host:port") even when the same name works for `reachable`. Verified
+		// against 0.33.0-1 — `pair charly-punktfunk-fleet-host:9777` fails, `pair
+		// 10.89.0.122:9777` pairs. Doing the lookup here means a bed can keep naming its
+		// peer by member name, which is what makes the manifest readable and portable.
 		args := []string{"pair", hostRef}
 		c := cliCall{Args: args, Mutating: true}
+		// pin_file is preferred over an inline pin for the same reason token_file is
+		// preferred over an inline token: the value never appears in the manifest. Both
+		// end up on stdin — never argv.
+		c.ResolveHost = hostRef
+		if in.PinFile != "" {
+			c.Args = append(c.Args, "--pin", "-")
+			c.StdinFile = in.PinFile
+			return c, nil
+		}
 		if in.Pin != "" {
 			c.Args = append(c.Args, "--pin", "-")
 			c.Stdin = in.Pin
@@ -178,7 +203,27 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		quoted = append(quoted, shellQuote(a))
 	}
 	cmd := shellQuote(clientBin(in)) + " " + strings.Join(quoted, " ")
+	if call.ResolveHost != "" {
+		// `pair` needs a literal address. Resolve the peer's name in the venue and
+		// substitute it, so the author writes a member name and the CLI still gets what
+		// it demands. A name that does not resolve fails here, with the name in the
+		// message, rather than as the CLI's opaque InvalidArg("host:port").
+		name, port, _ := strings.Cut(call.ResolveHost, ":")
+		if port == "" {
+			port = defaultNativePort
+		}
+		lookup := "PF_IP=$(getent hosts " + shellQuote(name) + " | awk '{print $1; exit}'); " +
+			"[ -n \"$PF_IP\" ] || { echo \"punktfunk: cannot resolve " + name + "\" >&2; exit 2; }; "
+		cmd = lookup + strings.Replace(cmd, shellQuote(call.ResolveHost), "\"$PF_IP:"+port+"\"", 1)
+	}
 	script := cmd
+	if call.StdinFile != "" {
+		// The PIN never reaches this process: the venue's own shell reads the file and
+		// pipes it. A missing file fails loudly rather than pairing with an empty PIN.
+		script = "test -s " + shellQuote(call.StdinFile) + " && cat " + shellQuote(call.StdinFile) + " | " + cmd
+		stdout, stderr, exit, err := exec.RunCapture(ctx, script)
+		return cliResult(in, stdout, stderr, exit, err)
+	}
 	if call.Stdin != "" {
 		// printf, not echo: no trailing newline surprises, and the value stays out of
 		// the process list because it is an argument to printf in the same shell rather
@@ -186,6 +231,13 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		script = "printf %s " + shellQuote(call.Stdin) + " | " + cmd
 	}
 	stdout, stderr, exit, err := exec.RunCapture(ctx, script)
+	return cliResult(in, stdout, stderr, exit, err)
+}
+
+// cliResult turns a client invocation's outcome into a verdict, mapping the documented exit
+// codes to named failures. Shared by every runCLI path so the stdin-file variant cannot drift
+// into reporting failures differently from the plain one.
+func cliResult(in *params.PunktfunkInput, stdout, stderr string, exit int, err error) (string, error) {
 	if err != nil {
 		return stdout, fmt.Errorf("punktfunk: %s: %w", in.Method, err)
 	}
