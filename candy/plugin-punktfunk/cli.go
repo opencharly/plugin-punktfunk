@@ -231,7 +231,15 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		// The PIN never reaches this process: the venue's own shell reads the file and
 		// pipes it. A missing file fails loudly rather than pairing with an empty PIN.
 		// The prefix stays OUTSIDE the pipeline — see above.
-		script = prefix + "test -s " + shellQuote(call.StdinFile) + " && cat " + shellQuote(call.StdinFile) + " | " + cmd
+		// An `X && Y` guard exits 1 with NO output when X fails, which is
+		// indistinguishable from the client itself failing — and the client's exit 1 is
+		// already undocumented, so a bare "exit 1" says nothing at all. Name the branch.
+		q := shellQuote(call.StdinFile)
+		script = prefix +
+			"if [ ! -s " + q + " ]; then echo \"punktfunk: pin file " + call.StdinFile +
+			" is missing or empty — did the host's pair-arm step run, and does this member " +
+			"mount the same path?\" >&2; exit 2; fi; " +
+			"cat " + q + " | " + cmd
 		stdout, stderr, exit, err := exec.RunCapture(ctx, script)
 		return cliResult(in, stdout, stderr, exit, err)
 	}

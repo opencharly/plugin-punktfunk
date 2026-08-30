@@ -183,8 +183,9 @@ func TestPinFileNeverReachesArgv(t *testing.T) {
 	if !strings.Contains(fe.script, "cat '/pfshare/pin' |") {
 		t.Errorf("the venue shell must pipe the file in: %s", fe.script)
 	}
-	if !strings.Contains(fe.script, "test -s '/pfshare/pin'") {
-		t.Errorf("a missing or empty pin file must fail loudly, not pair with an empty PIN: %s", fe.script)
+	if !strings.Contains(fe.script, "is missing or empty") {
+		t.Errorf("a missing or empty pin file must fail with a NAMED error, not a silent "+
+			"exit 1 indistinguishable from the client failing: %s", fe.script)
 	}
 	if !strings.Contains(fe.script, "'--pin' '-'") {
 		t.Errorf("expected the documented stdin form: %s", fe.script)
