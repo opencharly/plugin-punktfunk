@@ -305,3 +305,31 @@ func TestEveryClientCallEnsuresHome(t *testing.T) {
 		}
 	}
 }
+
+// The client reports its failures on STDOUT ("Pairing failed: InvalidArg(…)", "client
+// identity: HOME unset…"). Reporting only stderr discarded the one line that says what went
+// wrong and left a bare "exit 1" to be re-diagnosed by hand — which is exactly what happened,
+// repeatedly, while debugging this bed.
+func TestClientFailureSurfacesItsOwnMessage(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "pair", Host: "peer", Pin: "1234"}
+	call, _ := resolveCLICall(in)
+	fe := &fakeExec{exit: 1, stdout: "Pairing failed: InvalidArg(\"host:port\")\n"}
+	_, err := runCLI(context.Background(), fe, in, call)
+	if err == nil {
+		t.Fatal("a non-zero exit must be an error")
+	}
+	if !strings.Contains(err.Error(), "InvalidArg") {
+		t.Errorf("the client's own message must reach the verdict, got: %v", err)
+	}
+}
+
+// stderr still wins when both are present — it is the conventional channel.
+func TestStderrPreferredOverStdout(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "speed-test", Host: "peer"}
+	call, _ := resolveCLICall(in)
+	fe := &fakeExec{exit: 2, stdout: "noise", stderr: "the real error"}
+	_, err := runCLI(context.Background(), fe, in, call)
+	if err == nil || !strings.Contains(err.Error(), "the real error") {
+		t.Errorf("stderr should be preferred, got: %v", err)
+	}
+}

@@ -254,8 +254,17 @@ func cliResult(in *params.PunktfunkInput, stdout, stderr string, exit int, err e
 	}
 	if exit != 0 {
 		msg := cliExitMeaning(exit)
-		if t := trailer(stderr); t != "" {
-			return stdout, fmt.Errorf("punktfunk: %s: %s: %s", in.Method, msg, t)
+		// The client reports its own failures on STDOUT, not stderr — "Pairing failed:
+		// InvalidArg(…)", "client identity: HOME unset…", "Pairing isn't armed on the
+		// host…" all arrive there. Reporting only stderr threw the one line that says
+		// what actually went wrong, leaving a bare "exit 1" to be re-diagnosed by hand
+		// every time. Prefer stderr, fall back to stdout.
+		detail := trailer(stderr)
+		if detail == "" {
+			detail = trailer(stdout)
+		}
+		if detail != "" {
+			return stdout, fmt.Errorf("punktfunk: %s: %s: %s", in.Method, msg, detail)
 		}
 		return stdout, fmt.Errorf("punktfunk: %s: %s", in.Method, msg)
 	}
