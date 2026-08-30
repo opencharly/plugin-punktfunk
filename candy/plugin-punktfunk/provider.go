@@ -308,16 +308,17 @@ func streamProbeVerdict(out string, runErr error) (string, error) {
 	if runErr != nil {
 		return out, runErr
 	}
-	frames, sawFirst := streamProbeFrames(out)
+	frames, firstFrame := streamProbeFrames(out)
 	switch {
 	case frames > 0:
-		return fmt.Sprintf("streamed: %d frames decoded", frames), nil
-	case sawFirst:
-		// `timeout` can kill a healthy session before it prints a total. "First frame
-		// decoded" is still proof that video arrived and the decoder ran.
-		return "streamed: first frame decoded (session bounded before it reported a total)", nil
+		return fmt.Sprintf("streamed: %d frames decoded (%s)", frames, firstFrame), nil
+	case firstFrame != "":
+		// The bound kills a HEALTHY session before it prints a total — the client reports
+		// one only when the host ends the session. The first-frame line is still proof
+		// that video arrived and the decoder ran, and it names the geometry and the rung.
+		return "streamed: " + firstFrame, nil
 	}
 	// Carry the client's own words: they distinguish a refused codec from an unreachable
 	// host from a renderer that never started.
-	return "", fmt.Errorf("punktfunk: stream-probe: no frame decoded — the session carried no video.\nclient said:\n%s", out)
+	return "", fmt.Errorf("punktfunk: stream-probe: no frame decoded — the session carried no video.\nclient said:\n%s", stripANSI(out))
 }

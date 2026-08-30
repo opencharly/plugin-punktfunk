@@ -459,7 +459,7 @@ INFO pf_client_core::session: session ended total_frames=1192 reason="bounded"`}
 	if err != nil {
 		t.Fatalf("verdict: %v", err)
 	}
-	if !strings.Contains(verdict, "1192 frames") {
+	if !strings.Contains(verdict, "1192 frames") || !strings.Contains(verdict, "1920") {
 		t.Errorf("verdict must report the frame count, got %q", verdict)
 	}
 }
@@ -490,7 +490,71 @@ func TestStreamProbeAcceptsFirstFrameWithoutATotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first-frame-only must pass: %v", err)
 	}
-	if !strings.Contains(verdict, "first frame decoded") {
-		t.Errorf("unexpected verdict %q", verdict)
+	if !strings.Contains(verdict, "width=1920 height=1080") {
+		t.Errorf("verdict must carry the geometry, got %q", verdict)
+	}
+	if !strings.Contains(verdict, "native-vulkan") {
+		t.Errorf("verdict must carry the decode rung, got %q", verdict)
+	}
+	if !strings.HasPrefix(verdict, "streamed:") {
+		t.Errorf("both success shapes must share the streamed: prefix, got %q", verdict)
+	}
+}
+
+// The bed matches on a prefix, so BOTH success shapes must carry it. Asserting on
+// "frames decoded" instead cost a full bed run: the probe reported a real success as
+// "first frame decoded" — singular — and the check failed on a working stream.
+func TestBothStreamSuccessShapesSharePrefix(t *testing.T) {
+	withTotal := "session ended total_frames=1192\nfirst frame decoded width=1920 height=1080 path=\"native-vulkan\""
+	firstOnly := "first frame decoded width=1920 height=1080 path=\"native-vulkan\""
+	for _, out := range []string{withTotal, firstOnly} {
+		verdict, err := streamProbeVerdict(out, nil)
+		if err != nil {
+			t.Fatalf("unexpected failure: %v", err)
+		}
+		if !strings.HasPrefix(verdict, "streamed:") {
+			t.Errorf("verdict %q lacks the shared prefix", verdict)
+		}
+	}
+}
+
+// The renderer's tracing wraps field names in SGR escapes, so `width=1920` is NOT
+// contiguous in the bytes. A naive regex finds nothing and a real success degrades to
+// "geometry not reported" — which is exactly what a live bed run reported before this.
+func TestStreamProbeParsesANSIWrappedFields(t *testing.T) {
+	esc := "\x1b"
+	out := "INFO pf_client_core::session: first frame decoded " +
+		esc + "[3mwidth" + esc + "[0m" + esc + "[2m=" + esc + "[0m1920 " +
+		esc + "[3mheight" + esc + "[0m" + esc + "[2m=" + esc + "[0m1080 " +
+		esc + "[3mpath" + esc + "[0m" + esc + "[2m=" + esc + "[0m\"native-vulkan\""
+	verdict, err := streamProbeVerdict(out, nil)
+	if err != nil {
+		t.Fatalf("unexpected failure: %v", err)
+	}
+	if strings.Contains(verdict, "geometry not reported") {
+		t.Fatalf("ANSI-wrapped fields were not parsed: %q", verdict)
+	}
+	if !strings.Contains(verdict, "width=1920 height=1080") {
+		t.Errorf("verdict must carry the geometry, got %q", verdict)
+	}
+	if !strings.Contains(verdict, "native-vulkan") {
+		t.Errorf("verdict must carry the decode rung, got %q", verdict)
+	}
+}
+
+// A failure carries the client's own words to the reader, so they must not arrive as
+// escape-sequence noise.
+func TestStreamProbeFailureMessageIsReadable(t *testing.T) {
+	esc := "\x1b"
+	out := esc + "[33mconnect: Rejected(SetupFailed)" + esc + "[0m"
+	_, err := streamProbeVerdict(out, nil)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if strings.Contains(err.Error(), esc) {
+		t.Errorf("failure message still carries ANSI escapes: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Rejected(SetupFailed)") {
+		t.Errorf("failure message lost the client's words: %q", err.Error())
 	}
 }

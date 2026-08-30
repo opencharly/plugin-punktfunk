@@ -291,14 +291,39 @@ func streamForSeconds(v string) int {
 //
 // on a session that ends, and `first frame decoded` as soon as one arrives — which is the
 // signal that matters when `timeout` kills a HEALTHY session before it can report a total.
+// ansiRE matches the SGR escapes punktfunk's tracing wraps field names in. The renderer
+// prints `first frame decoded width=1920 …` as
+//
+//	first frame decoded \x1b[3mwidth\x1b[0m\x1b[2m=\x1b[0m1920
+//
+// so `width=1920` is not contiguous in the bytes and a naive regex silently finds nothing —
+// which is how a real success first reported "geometry not reported". Stripping also makes
+// the client's own words readable when they are carried into a FAILURE verdict.
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
 var totalFramesRE = regexp.MustCompile(`total_frames=(\d+)`)
 
-func streamProbeFrames(out string) (frames int, sawFirst bool) {
+// A bounded probe usually sees only this line, because the client reports a TOTAL only when
+// the HOST ends the session — neither SIGTERM nor SIGINT makes it print one. The line is
+// strong evidence in its own right, so the geometry and decode path are carried into the
+// verdict rather than thrown away:
+//
+//	first frame decoded width=1920 height=1080 path="native-vulkan"
+var firstFrameRE = regexp.MustCompile(`first frame decoded (width=\d+ height=\d+(?: path="[^"]*")?)`)
+
+func streamProbeFrames(out string) (frames int, firstFrame string) {
+	out = stripANSI(out)
 	if m := totalFramesRE.FindStringSubmatch(out); m != nil {
 		frames, _ = strconv.Atoi(m[1])
 	}
-	sawFirst = strings.Contains(out, "first frame decoded")
-	return frames, sawFirst
+	if m := firstFrameRE.FindStringSubmatch(out); m != nil {
+		firstFrame = m[1]
+	} else if strings.Contains(out, "first frame decoded") {
+		firstFrame = "geometry not reported"
+	}
+	return frames, firstFrame
 }
 
 // runCLI executes a client call INSIDE the venue and returns its stdout.
