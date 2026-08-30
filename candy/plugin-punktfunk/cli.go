@@ -75,7 +75,29 @@ var cliMethods = map[string]struct{}{
 }
 
 // resolveCLICall builds the client invocation for a method from the typed input.
+// resolveCLICall builds the client invocation, then resolves the peer for every method that
+// takes a host-ref.
+//
+// Resolution is uniform for one reason: `pair` stores the host under the ADDRESS it paired
+// with, so `hosts list` reports
+//
+//	10.89.0.160  10.89.0.160:9777  paired  -
+//
+// and a later `speed-test <name>` is told the name "isn't a saved host". Resolving in exactly
+// one place keeps the saved key and every later reference identical, and lets a bed keep
+// naming its peer by member name throughout.
 func resolveCLICall(in *params.PunktfunkInput) (cliCall, error) {
+	c, err := buildCLICall(in)
+	if err != nil {
+		return c, err
+	}
+	if cliRequiredField[in.Method] == "host" {
+		c.ResolveHost = in.Host
+	}
+	return c, nil
+}
+
+func buildCLICall(in *params.PunktfunkInput) (cliCall, error) {
 	m := in.Method
 	if want, ok := cliRequiredField[m]; ok {
 		if err := requireField(in, want); err != nil {
@@ -112,7 +134,6 @@ func resolveCLICall(in *params.PunktfunkInput) (cliCall, error) {
 		// pin_file is preferred over an inline pin for the same reason token_file is
 		// preferred over an inline token: the value never appears in the manifest. Both
 		// end up on stdin — never argv.
-		c.ResolveHost = hostRef
 		if in.PinFile != "" {
 			c.Args = append(c.Args, "--pin", "-")
 			c.StdinFile = in.PinFile

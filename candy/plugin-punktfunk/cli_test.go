@@ -239,15 +239,31 @@ func TestPairResolvesHostToAnAddress(t *testing.T) {
 	}
 }
 
-// Only `pair` needs this. speed-test and friends take the name as authored.
-func TestOnlyPairResolvesTheHost(t *testing.T) {
-	for _, m := range []string{"speed-test", "reachable", "launch", "client-library"} {
+// EVERY host-taking method resolves the peer, not just `pair`. `pair` saves the host under
+// the ADDRESS it paired with, so a later `speed-test <name>` is told the name "isn't a saved
+// host" — the saved key and every later reference have to agree. An earlier version of this
+// test asserted the opposite (only pair resolves), and the bed failed exactly that way.
+func TestEveryHostTakingMethodResolvesThePeer(t *testing.T) {
+	for _, m := range []string{"pair", "speed-test", "reachable", "launch", "client-library", "open", "wake"} {
 		call, err := resolveCLICall(&params.PunktfunkInput{Method: m, Host: "peer"})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", m, err)
+		}
+		if call.ResolveHost != "peer" {
+			t.Errorf("%s must resolve the peer, got %q", m, call.ResolveHost)
+		}
+	}
+}
+
+// Methods that name no host must not acquire a lookup.
+func TestHostlessMethodsDoNotResolve(t *testing.T) {
+	for _, m := range []string{"hosts-list", "profiles-list", "client-reset"} {
+		call, err := resolveCLICall(&params.PunktfunkInput{Method: m})
+		if err != nil {
+			t.Fatalf("%s: %v", m, err)
 		}
 		if call.ResolveHost != "" {
-			t.Errorf("%s must not resolve the host itself, got %q", m, call.ResolveHost)
+			t.Errorf("%s takes no host, got ResolveHost=%q", m, call.ResolveHost)
 		}
 	}
 }
