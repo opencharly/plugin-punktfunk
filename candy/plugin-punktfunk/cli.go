@@ -44,6 +44,12 @@ type cliCall struct {
 	// forgetting). Same contract as apiCall.Mutating: these belong in `run:` steps, so
 	// a `check:` can never silently pair or tear down a session.
 	Mutating bool
+	// NeedsDisplay marks a call that starts the RENDERER. `punktfunk` itself is a control
+	// binary that links no video libraries at all (libgcc/libm/libc and nothing else); the
+	// decoder lives in the separate `punktfunk-client`, which links libvulkan, libwayland-*,
+	// libdrm and libgbm. `launch` and `open` spawn it, so they need a Wayland display to
+	// render into — without one the renderer cannot start (the CLI's documented exit 4).
+	NeedsDisplay bool
 }
 
 // cliRequiredField names the input field a client method needs, so a missing one is an
@@ -150,7 +156,7 @@ func buildCLICall(in *params.PunktfunkInput) (cliCall, error) {
 		if in.Game != "" {
 			args = append(args, "--game", in.Game)
 		}
-		return cliCall{Args: args, Mutating: true}, nil
+		return cliCall{Args: args, Mutating: true, NeedsDisplay: true}, nil
 
 	case "client-library":
 		// --json because a library listing is data a step will want to match on, and
@@ -158,9 +164,12 @@ func buildCLICall(in *params.PunktfunkInput) (cliCall, error) {
 		return cliCall{Args: []string{"library", hostRef, "--json"}}, nil
 
 	case "speed-test":
-		// The assertion that the transport actually carries: it reports measured and
-		// recommended bitrate, which a host that installed but cannot stream cannot
-		// produce.
+		// Reports measured and recommended bitrate. NOTE this runs on the CONTROL binary,
+		// which carries no decoder, so it advertises codec 0x00 and a host that requires a
+		// video codec refuses the session outright:
+		//   no shared video codec: client advertised 0x00, host can emit 0x01
+		// That is the client accurately reporting what it is, not a host defect. `launch`
+		// is the method that proves streaming, because it spawns the renderer.
 		return cliCall{Args: []string{"speed-test", hostRef}}, nil
 
 	case "open":
@@ -168,7 +177,7 @@ func buildCLICall(in *params.PunktfunkInput) (cliCall, error) {
 		if in.AutoApprove {
 			args = append(args, "--yes")
 		}
-		return cliCall{Args: args, Mutating: true}, nil
+		return cliCall{Args: args, Mutating: true, NeedsDisplay: true}, nil
 
 	case "wake":
 		return cliCall{Args: []string{"wake", hostRef}, Mutating: true}, nil
@@ -213,6 +222,23 @@ func clientBin(in *params.PunktfunkInput) string {
 	return defaultClientBin
 }
 
+// waylandPrologue points a renderer call at the venue's own compositor. It runs BEFORE the
+// pipeline, like the HOME fallback, and exits 4 — the CLI's own "renderer startup failed"
+// code — when the venue has no display, so the verdict keeps the documented meaning.
+const waylandPrologue = `if [ -z "$WAYLAND_DISPLAY" ]; then
+  for d in "$XDG_RUNTIME_DIR" "/run/user/$(id -u)" /tmp; do
+    [ -n "$d" ] || continue
+    for s in "$d"/wayland-[0-9]*; do
+      [ -S "$s" ] || continue
+      XDG_RUNTIME_DIR="$d"; export XDG_RUNTIME_DIR
+      WAYLAND_DISPLAY="${s##*/}"; export WAYLAND_DISPLAY
+      break 2
+    done
+  done
+fi
+[ -n "$WAYLAND_DISPLAY" ] || { echo "punktfunk: no wayland display in this venue (searched \"$XDG_RUNTIME_DIR\", /run/user/$(id -u), /tmp) - the renderer cannot start" >&2; exit 4; }
+`
+
 // runCLI executes a client call INSIDE the venue and returns its stdout.
 //
 // An exit code is turned into an error carrying cliExitMeaning, so the step's verdict
@@ -234,6 +260,16 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 	// reads as "something went wrong" rather than "there is no HOME". Derive it from
 	// passwd when the venue's environment did not supply one.
 	prefix := `[ -n "$HOME" ] || export HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"; `
+	if call.NeedsDisplay {
+		// The renderer is a Wayland client. charly's exec channel sets no display, so a
+		// venue that HAS a compositor still fails as the CLI's opaque exit 4. Derive both
+		// variables from the socket the compositor actually created, and only when the
+		// venue did not supply them, so an explicit setting always wins.
+		//
+		// A venue with no compositor fails HERE, naming what was searched, instead of
+		// surfacing as "renderer startup failed" with no indication of why.
+		prefix += waylandPrologue
+	}
 	if call.ResolveHost != "" {
 		// `pair` needs a literal address. Resolve the peer's name in the venue and
 		// substitute it, so the author writes a member name and the CLI still gets what

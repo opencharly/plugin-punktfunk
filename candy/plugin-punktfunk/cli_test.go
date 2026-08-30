@@ -350,3 +350,70 @@ func TestStderrPreferredOverStdout(t *testing.T) {
 		t.Errorf("stderr should be preferred, got: %v", err)
 	}
 }
+
+// The renderer lives in a SEPARATE binary from the CLI: `punktfunk` links libgcc/libm/libc
+// and nothing else, while `punktfunk-client` links libvulkan, libwayland-*, libdrm and
+// libgbm. Only the methods that spawn it need a display, and a method that does not must
+// not acquire an exit-4 guard it can never satisfy.
+func TestOnlyRendererMethodsCarryTheDisplayPrologue(t *testing.T) {
+	renderer := map[string]bool{"launch": true, "open": true}
+	for m := range cliMethods {
+		in := &params.PunktfunkInput{Method: m, Host: "host-a"}
+		call, err := resolveCLICall(in)
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", m, err)
+		}
+		if got, want := call.NeedsDisplay, renderer[m]; got != want {
+			t.Errorf("%s: NeedsDisplay = %v, want %v", m, got, want)
+		}
+		fe := &fakeExec{}
+		if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+			t.Fatalf("%s: runCLI: %v", m, err)
+		}
+		hasPrologue := strings.Contains(fe.script, "WAYLAND_DISPLAY")
+		if hasPrologue != renderer[m] {
+			t.Errorf("%s: script carries the display prologue = %v, want %v\nscript:\n%s",
+				m, hasPrologue, renderer[m], fe.script)
+		}
+	}
+}
+
+// Same rule the PIN pipeline and the host lookup follow: the prologue is SETUP, so it runs
+// before the first pipe. Inside the pipeline it would run in a subshell and its exports
+// would not reach the client.
+func TestDisplayPrologueRunsBeforeThePipeline(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "launch", Host: "host-a"}
+	call, err := resolveCLICall(in)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatalf("runCLI: %v", err)
+	}
+	client := strings.Index(fe.script, "punktfunk")
+	display := strings.Index(fe.script, "WAYLAND_DISPLAY")
+	if display < 0 || client < 0 {
+		t.Fatalf("expected both the prologue and the client call:\n%s", fe.script)
+	}
+	if display > client {
+		t.Errorf("display prologue must precede the client invocation:\n%s", fe.script)
+	}
+}
+
+// A venue with no compositor must fail NAMING that, with the CLI's own documented
+// "renderer startup failed" code, rather than surfacing as an opaque exit.
+func TestDisplayPrologueFailsWithTheDocumentedRendererCode(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "launch", Host: "host-a"}
+	call, _ := resolveCLICall(in)
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatalf("runCLI: %v", err)
+	}
+	if !strings.Contains(fe.script, "exit 4") {
+		t.Errorf("missing the exit-4 guard:\n%s", fe.script)
+	}
+	if !strings.Contains(fe.script, "no wayland display") {
+		t.Errorf("guard must name the condition:\n%s", fe.script)
+	}
+}
