@@ -114,6 +114,8 @@ func (provider) Invoke(ctx context.Context, req *pb.InvokeRequest) (*pb.InvokeRe
 		}
 	}
 
+	applyDefaultWriteBody(&call)
+
 	out, runErr := doCall(ctx, cc, addr, token, &in, call)
 	return sdk.VerbVerdict("punktfunk", method, out, runErr, &op, false)
 }

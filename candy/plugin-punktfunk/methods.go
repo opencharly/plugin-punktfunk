@@ -40,6 +40,20 @@ var requiredField = map[string]string{
 	"pin":            "pin",
 }
 
+// emptyJSONBody is what a bodyless mutating request sends.
+//
+// The management API rejects a write with no body twice over, and the two errors are
+// different, so both had to be fixed:
+//
+//	POST /api/v1/native/pair/arm            -> {"error":"Expected request with `Content-Type: application/json`"}
+//	POST … with Content-Type but no body    -> {"error":"Failed to parse the request body as JSON: EOF while parsing a value at line 1 column 0"}
+//	POST … with Content-Type and `{}`       -> {"enabled":true,"armed":true,"pin":"…","expires_in_secs":119,…}
+//
+// So a write needs BOTH the header and a parseable document. Sending `{}` is the smallest
+// one. This was invisible until now because every check shipped so far calls a READ method;
+// the mutating half of the verb had never run against a real host.
+const emptyJSONBody = "{}"
+
 // resolveCall builds the API call for a method from the typed input.
 func resolveCall(in *params.PunktfunkInput) (apiCall, error) {
 	m := in.Method
@@ -183,4 +197,15 @@ func jsonObject(key, val string) string {
 
 func jsonBool(key string, val bool) string {
 	return fmt.Sprintf("{%q:%t}", key, val)
+}
+
+// applyDefaultWriteBody gives a mutating call with no authored body the smallest parseable
+// JSON document. The management API rejects a bodyless write (see emptyJSONBody), so this is
+// applied once, centrally, rather than in each resolveCall entry — a future mutating method
+// cannot forget it. DELETE is excluded: it carries no body by convention and the host does
+// not ask for one.
+func applyDefaultWriteBody(call *apiCall) {
+	if call.Mutating && call.Body == "" && call.HTTPMethod != "DELETE" {
+		call.Body = emptyJSONBody
+	}
 }
