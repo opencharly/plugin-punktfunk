@@ -3,6 +3,8 @@ package punktfunk
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/opencharly/plugin-punktfunk/candy/plugin-punktfunk/params"
@@ -44,6 +46,13 @@ type cliCall struct {
 	// forgetting). Same contract as apiCall.Mutating: these belong in `run:` steps, so
 	// a `check:` can never silently pair or tear down a session.
 	Mutating bool
+	// TimeoutSecs bounds the call with `timeout`. A streaming session never ends by
+	// itself, so a probe MUST be bounded or it hangs the bed rather than asserting.
+	TimeoutSecs int
+	// IgnoreExit judges the call on its OUTPUT rather than its exit code. A bounded
+	// stream is killed by `timeout` (124) exactly when it is working, so the exit code
+	// is the wrong signal — the frame count is the assertion.
+	IgnoreExit bool
 	// NeedsDisplay marks a call that starts the RENDERER. `punktfunk` itself is a control
 	// binary that links no video libraries at all (libgcc/libm/libc and nothing else); the
 	// decoder lives in the separate `punktfunk-client`, which links libvulkan, libwayland-*,
@@ -57,6 +66,7 @@ type cliCall struct {
 var cliRequiredField = map[string]string{
 	"pair":           "host",
 	"launch":         "host",
+	"stream-probe":   "host",
 	"client-library": "host",
 	"speed-test":     "host",
 	"open":           "host",
@@ -76,7 +86,7 @@ func isCLIMethod(m string) bool {
 // cliMethods is the set of client-CLI methods, mirroring the documented verb list.
 var cliMethods = map[string]struct{}{
 	"hosts-list": {}, "hosts-add": {}, "hosts-forget": {},
-	"pair": {}, "launch": {}, "client-library": {}, "speed-test": {},
+	"pair": {}, "launch": {}, "client-library": {}, "speed-test": {}, "stream-probe": {},
 	"open": {}, "wake": {}, "reachable": {}, "profiles-list": {}, "client-reset": {},
 }
 
@@ -179,6 +189,22 @@ func buildCLICall(in *params.PunktfunkInput) (cliCall, error) {
 		}
 		return cliCall{Args: args, Mutating: true, NeedsDisplay: true}, nil
 
+	case "stream-probe":
+		// THE streaming assertion. `speed-test` cannot be it: that runs on the control
+		// binary, which links no video libraries, so it advertises codec 0x00 and the host
+		// refuses. This runs a real bounded session through the RENDERER and counts frames.
+		//
+		// Non-mutating on purpose, so it can be authored as a `check:`: it opens a session
+		// and lets it close, leaving no enrolment or state behind — same contract as
+		// speed-test.
+		secs := streamForSeconds(in.StreamFor)
+		return cliCall{
+			Args:         []string{"launch", hostRef, "--fullscreen"},
+			TimeoutSecs:  secs,
+			IgnoreExit:   true,
+			NeedsDisplay: true,
+		}, nil
+
 	case "wake":
 		return cliCall{Args: []string{"wake", hostRef}, Mutating: true}, nil
 	case "reachable":
@@ -239,6 +265,67 @@ fi
 [ -n "$WAYLAND_DISPLAY" ] || { echo "punktfunk: no wayland display in this venue (searched \"$XDG_RUNTIME_DIR\", /run/user/$(id -u), /tmp) - the renderer cannot start" >&2; exit 4; }
 `
 
+// defaultStreamForSecs bounds a stream probe when the author names no duration. Long
+// enough for the handshake, the decoder to come up and the adaptive-bitrate probe to run
+// (that alone takes ~800ms and only starts after the first frame), short enough that a
+// broken host fails the bed quickly.
+const defaultStreamForSecs = 20
+
+// streamForSeconds parses the schema-constrained "<n>s" form. The schema already rejects
+// anything else, so a bad value here can only mean the field was bypassed — fall back
+// rather than fail, since the probe's verdict comes from the frame count either way.
+func streamForSeconds(v string) int {
+	if v == "" {
+		return defaultStreamForSecs
+	}
+	n, err := strconv.Atoi(strings.TrimSuffix(v, "s"))
+	if err != nil || n <= 0 {
+		return defaultStreamForSecs
+	}
+	return n
+}
+
+// streamProbeFrames reports how many frames the session decoded. The client prints
+//
+//	INFO pf_client_core::session: session ended total_frames=1192 reason="..."
+//
+// on a session that ends, and `first frame decoded` as soon as one arrives — which is the
+// signal that matters when `timeout` kills a HEALTHY session before it can report a total.
+// ansiRE matches the SGR escapes punktfunk's tracing wraps field names in. The renderer
+// prints `first frame decoded width=1920 …` as
+//
+//	first frame decoded \x1b[3mwidth\x1b[0m\x1b[2m=\x1b[0m1920
+//
+// so `width=1920` is not contiguous in the bytes and a naive regex silently finds nothing —
+// which is how a real success first reported "geometry not reported". Stripping also makes
+// the client's own words readable when they are carried into a FAILURE verdict.
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+var totalFramesRE = regexp.MustCompile(`total_frames=(\d+)`)
+
+// A bounded probe usually sees only this line, because the client reports a TOTAL only when
+// the HOST ends the session — neither SIGTERM nor SIGINT makes it print one. The line is
+// strong evidence in its own right, so the geometry and decode path are carried into the
+// verdict rather than thrown away:
+//
+//	first frame decoded width=1920 height=1080 path="native-vulkan"
+var firstFrameRE = regexp.MustCompile(`first frame decoded (width=\d+ height=\d+(?: path="[^"]*")?)`)
+
+func streamProbeFrames(out string) (frames int, firstFrame string) {
+	out = stripANSI(out)
+	if m := totalFramesRE.FindStringSubmatch(out); m != nil {
+		frames, _ = strconv.Atoi(m[1])
+	}
+	if m := firstFrameRE.FindStringSubmatch(out); m != nil {
+		firstFrame = m[1]
+	} else if strings.Contains(out, "first frame decoded") {
+		firstFrame = "geometry not reported"
+	}
+	return frames, firstFrame
+}
+
 // runCLI executes a client call INSIDE the venue and returns its stdout.
 //
 // An exit code is turned into an error carrying cliExitMeaning, so the step's verdict
@@ -250,6 +337,12 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		quoted = append(quoted, shellQuote(a))
 	}
 	cmd := shellQuote(clientBin(in)) + " " + strings.Join(quoted, " ")
+	if call.TimeoutSecs > 0 {
+		// A streaming session runs until something stops it, so the probe supplies the
+		// stop. `timeout` exits 124 here precisely WHEN the stream is healthy, which is
+		// why such a call is judged on its frame count instead (IgnoreExit).
+		cmd = "timeout " + strconv.Itoa(call.TimeoutSecs) + " " + cmd
+	}
 	// prefix runs BEFORE the pipeline, never inside it. Folding the lookup into cmd put it
 	// on the right-hand side of `cat pin | …`, so the PIN was piped into the lookup instead
 	// of into punktfunk and `pair` ran with no stdin at all.
@@ -307,6 +400,13 @@ func runCLI(ctx context.Context, exec venueExec, in *params.PunktfunkInput, call
 		script = prefix + "printf %s " + shellQuote(call.Stdin) + " | " + cmd
 	}
 	stdout, stderr, exit, err := exec.RunCapture(ctx, script)
+	if call.IgnoreExit && err == nil {
+		// Judged on output, not status — see cliCall.IgnoreExit. The evidence is the
+		// renderer's TRACING, which goes to stderr, while cliResult would return only
+		// stdout on a zero exit — so hand back both or the frame count is invisible.
+		exit = 0
+		return strings.TrimSpace(stdout + "\n" + stderr), nil
+	}
 	return cliResult(in, stdout, stderr, exit, err)
 }
 

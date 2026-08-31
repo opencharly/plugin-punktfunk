@@ -356,7 +356,8 @@ func TestStderrPreferredOverStdout(t *testing.T) {
 // libgbm. Only the methods that spawn it need a display, and a method that does not must
 // not acquire an exit-4 guard it can never satisfy.
 func TestOnlyRendererMethodsCarryTheDisplayPrologue(t *testing.T) {
-	renderer := map[string]bool{"launch": true, "open": true}
+	// stream-probe belongs here too: it IS a launch, bounded and counted.
+	renderer := map[string]bool{"launch": true, "open": true, "stream-probe": true}
 	for m := range cliMethods {
 		in := &params.PunktfunkInput{Method: m, Host: "host-a"}
 		call, err := resolveCLICall(in)
@@ -415,5 +416,145 @@ func TestDisplayPrologueFailsWithTheDocumentedRendererCode(t *testing.T) {
 	}
 	if !strings.Contains(fe.script, "no wayland display") {
 		t.Errorf("guard must name the condition:\n%s", fe.script)
+	}
+}
+
+// The probe must be BOUNDED. An unbounded launch never returns, so a bed authored with it
+// hangs instead of asserting — the failure mode that turns a check into a timeout.
+func TestStreamProbeIsBounded(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "stream-probe", Host: "host-a"}
+	call, err := resolveCLICall(in)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if call.TimeoutSecs != defaultStreamForSecs {
+		t.Errorf("TimeoutSecs = %d, want %d", call.TimeoutSecs, defaultStreamForSecs)
+	}
+	fe := &fakeExec{}
+	if _, err := runCLI(context.Background(), fe, in, call); err != nil {
+		t.Fatalf("runCLI: %v", err)
+	}
+	if !strings.Contains(fe.script, "timeout 20 ") {
+		t.Errorf("probe is not bounded by timeout:\n%s", fe.script)
+	}
+	in2 := &params.PunktfunkInput{Method: "stream-probe", Host: "host-a", StreamFor: "45s"}
+	call2, _ := resolveCLICall(in2)
+	if call2.TimeoutSecs != 45 {
+		t.Errorf("stream_for=45s -> TimeoutSecs = %d, want 45", call2.TimeoutSecs)
+	}
+}
+
+// `timeout` kills the session with 124 exactly WHEN it is healthy, so judging on the exit
+// code would invert the verdict: every working stream would report failure.
+func TestStreamProbeJudgesFramesNotExitCode(t *testing.T) {
+	in := &params.PunktfunkInput{Method: "stream-probe", Host: "host-a"}
+	call, _ := resolveCLICall(in)
+	fe := &fakeExec{exit: 124, stderr: `INFO pf_client_core::session: first frame decoded width=1920 height=1080
+INFO pf_client_core::session: session ended total_frames=1192 reason="bounded"`}
+	out, err := runCLI(context.Background(), fe, in, call)
+	if err != nil {
+		t.Fatalf("exit 124 with frames must not be an error: %v", err)
+	}
+	verdict, err := streamProbeVerdict(out, nil)
+	if err != nil {
+		t.Fatalf("verdict: %v", err)
+	}
+	if !strings.Contains(verdict, "1192 frames") || !strings.Contains(verdict, "1920") {
+		t.Errorf("verdict must report the frame count, got %q", verdict)
+	}
+}
+
+// The state this whole bed exists to catch: the session connects, every control-plane check
+// passes, and not one frame is decoded.
+func TestStreamProbeFailsWhenNoFrameDecodes(t *testing.T) {
+	out := `INFO punktfunk_core::client::pump::handshake: host resolved compositor compositor="wlroots"
+connect: Rejected(SetupFailed)
+no shared video codec: client advertised 0x00, host can emit 0x01`
+	_, err := streamProbeVerdict(out, nil)
+	if err == nil {
+		t.Fatal("a session that decoded nothing must FAIL")
+	}
+	if !strings.Contains(err.Error(), "no frame decoded") {
+		t.Errorf("verdict must name the condition, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "advertised 0x00") {
+		t.Errorf("verdict must carry the client's own words, got %q", err)
+	}
+}
+
+// A healthy session killed by the bound may never print a total. "first frame decoded" is
+// still proof that video arrived.
+func TestStreamProbeAcceptsFirstFrameWithoutATotal(t *testing.T) {
+	out := "INFO pf_client_core::session: first frame decoded width=1920 height=1080 path=\"native-vulkan\""
+	verdict, err := streamProbeVerdict(out, nil)
+	if err != nil {
+		t.Fatalf("first-frame-only must pass: %v", err)
+	}
+	if !strings.Contains(verdict, "width=1920 height=1080") {
+		t.Errorf("verdict must carry the geometry, got %q", verdict)
+	}
+	if !strings.Contains(verdict, "native-vulkan") {
+		t.Errorf("verdict must carry the decode rung, got %q", verdict)
+	}
+	if !strings.HasPrefix(verdict, "streamed:") {
+		t.Errorf("both success shapes must share the streamed: prefix, got %q", verdict)
+	}
+}
+
+// The bed matches on a prefix, so BOTH success shapes must carry it. Asserting on
+// "frames decoded" instead cost a full bed run: the probe reported a real success as
+// "first frame decoded" — singular — and the check failed on a working stream.
+func TestBothStreamSuccessShapesSharePrefix(t *testing.T) {
+	withTotal := "session ended total_frames=1192\nfirst frame decoded width=1920 height=1080 path=\"native-vulkan\""
+	firstOnly := "first frame decoded width=1920 height=1080 path=\"native-vulkan\""
+	for _, out := range []string{withTotal, firstOnly} {
+		verdict, err := streamProbeVerdict(out, nil)
+		if err != nil {
+			t.Fatalf("unexpected failure: %v", err)
+		}
+		if !strings.HasPrefix(verdict, "streamed:") {
+			t.Errorf("verdict %q lacks the shared prefix", verdict)
+		}
+	}
+}
+
+// The renderer's tracing wraps field names in SGR escapes, so `width=1920` is NOT
+// contiguous in the bytes. A naive regex finds nothing and a real success degrades to
+// "geometry not reported" — which is exactly what a live bed run reported before this.
+func TestStreamProbeParsesANSIWrappedFields(t *testing.T) {
+	esc := "\x1b"
+	out := "INFO pf_client_core::session: first frame decoded " +
+		esc + "[3mwidth" + esc + "[0m" + esc + "[2m=" + esc + "[0m1920 " +
+		esc + "[3mheight" + esc + "[0m" + esc + "[2m=" + esc + "[0m1080 " +
+		esc + "[3mpath" + esc + "[0m" + esc + "[2m=" + esc + "[0m\"native-vulkan\""
+	verdict, err := streamProbeVerdict(out, nil)
+	if err != nil {
+		t.Fatalf("unexpected failure: %v", err)
+	}
+	if strings.Contains(verdict, "geometry not reported") {
+		t.Fatalf("ANSI-wrapped fields were not parsed: %q", verdict)
+	}
+	if !strings.Contains(verdict, "width=1920 height=1080") {
+		t.Errorf("verdict must carry the geometry, got %q", verdict)
+	}
+	if !strings.Contains(verdict, "native-vulkan") {
+		t.Errorf("verdict must carry the decode rung, got %q", verdict)
+	}
+}
+
+// A failure carries the client's own words to the reader, so they must not arrive as
+// escape-sequence noise.
+func TestStreamProbeFailureMessageIsReadable(t *testing.T) {
+	esc := "\x1b"
+	out := esc + "[33mconnect: Rejected(SetupFailed)" + esc + "[0m"
+	_, err := streamProbeVerdict(out, nil)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if strings.Contains(err.Error(), esc) {
+		t.Errorf("failure message still carries ANSI escapes: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Rejected(SetupFailed)") {
+		t.Errorf("failure message lost the client's words: %q", err.Error())
 	}
 }

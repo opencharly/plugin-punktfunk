@@ -32,7 +32,8 @@
 		// of a stream in charly verbs instead of shelling out.
 		"hosts-list" | "hosts-add" | "hosts-forget" |
 		"pair" | "launch" | "client-library" | "speed-test" |
-		"open" | "wake" | "reachable" | "profiles-list" | "client-reset"
+		"open" | "wake" | "reachable" | "profiles-list" | "client-reset" |
+		"stream-probe"
 
 	// host — the client-side `<host-ref>`: a saved host name, or host[:port]. Required
 	// by every client method that names a host.
@@ -62,6 +63,11 @@
 	// Pairs with pin_out. Preferred over an inline `pin:` for the same reason token_file is
 	// preferred over an inline token: the value never appears in the manifest.
 	pin_file?: string & =~"^/" @go(PinFile)
+
+	// stream_for — stream-probe only: how long to hold the session open before counting
+	// frames. The probe is BOUNDED on purpose: a real session never ends by itself, so an
+	// unbounded launch would hang the bed instead of asserting anything.
+	stream_for?: string & =~"^[0-9]+s$" @go(StreamFor)
 
     // client_bin — override the client binary. The Flatpak build is not on PATH and is
 	// reached as `flatpak run --command=punktfunk io.unom.Punktfunk`.

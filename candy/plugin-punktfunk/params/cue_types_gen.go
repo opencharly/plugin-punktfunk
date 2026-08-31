@@ -53,6 +53,11 @@ type PunktfunkInput struct {
 	// preferred over an inline token: the value never appears in the manifest.
 	PinFile string `json:"pin_file,omitempty"`
 
+	// stream_for — stream-probe only: how long to hold the session open before counting
+	// frames. The probe is BOUNDED on purpose: a real session never ends by itself, so an
+	// unbounded launch would hang the bed instead of asserting anything.
+	StreamFor string `json:"stream_for,omitempty"`
+
 	// client_bin — override the client binary. The Flatpak build is not on PATH and is
 	// reached as `flatpak run --command=punktfunk io.unom.Punktfunk`.
 	ClientBin string `json:"client_bin,omitempty"`
