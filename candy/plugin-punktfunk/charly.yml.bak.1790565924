@@ -1,5 +1,7 @@
+version: 2026.240.1943
 plugin-punktfunk:
     candy:
+        version: 2026.243.0549
         description: |-
             OUT-OF-TREE charly plugin serving the `punktfunk` check verb — a standalone Go
             module driving a running punktfunk streaming host through its management REST
@@ -60,6 +62,7 @@ plugin-punktfunk:
               retry_interval: 5s
               context:
                 - runtime
+
 punktfunk-skill:
     skill:
         name: punktfunk
