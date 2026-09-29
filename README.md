@@ -65,8 +65,9 @@ Install the host itself with the
   client method surface), `provider.go` / `plugin.go`, `transport.go` /
   `token.go` / `parse.go`, `cli.go` (the client half), `schema/punktfunk.cue`
   (the self-contained input schema), `cmd/serve/main.go`.
-- `charly.yml` — the root project manifest (`discover: candy` + the
-  `punktfunk-skill` skill entity).
+- `charly.yml` — the root project manifest (`discover: candy` only); the
+  `punktfunk-skill` `skill:` entity lives in the candy manifest
+  `candy/plugin-punktfunk/charly.yml`.
 - `.github/workflows/tag-on-merge.yml` — CalVer tag + `CHANGELOG/` on merge.
 
 ## Related

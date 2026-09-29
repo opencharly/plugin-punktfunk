@@ -3,11 +3,13 @@
 Standalone plugin repo for the `punktfunk` check verb (`verb:punktfunk`). The
 plugin is a Go module at `candy/plugin-punktfunk/` (module path
 `github.com/opencharly/plugin-punktfunk/candy/plugin-punktfunk`); the root
-`charly.yml` declares `discover: candy` **and** the `punktfunk-skill` `skill:`
-entity (the corpus source for `/charly-check:punktfunk`).
+`charly.yml` declares `discover: candy` so the repo is a project, and the candy
+manifest carries the `punktfunk-skill` `skill:` entity (the corpus source for
+`/charly-check:punktfunk`).
 
 Canonical files:
 
+- `charly.yml` — the root project manifest (`discover: candy` only).
 - `candy/plugin-punktfunk/charly.yml` — the `plugin-punktfunk:` candy entity
   (`plugin:` block, `plan:` check) + the `punktfunk-skill` skill entity.
 - `candy/plugin-punktfunk/methods.go` — the host + client method surface.
