@@ -36,8 +36,10 @@ import (
 //go:embed schema/*.cue
 var schemaFS embed.FS
 
-// pluginCalVer is this candy's CalVer, advertised over Describe. It must match the
-// `version:` in charly.yml — the host reports it when the verb resolves.
+// pluginCalVer is the CalVer this plugin advertises over Describe; the host reports it
+// when the verb resolves. The candy field it once mirrored — `version:` in charly.yml —
+// was retired org-wide, so this literal is the maintained stamp and is NOT derived from
+// the repo tag.
 const pluginCalVer = "2026.241.1845"
 
 // NewProvider returns the punktfunk provider.
