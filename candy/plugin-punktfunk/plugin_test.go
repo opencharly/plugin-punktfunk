@@ -60,32 +60,30 @@ func TestResolveCallMapsEveryDeclaredMethod(t *testing.T) {
 			t.Errorf("resolveCall(%q) path %q is not under /api/v1/", method, call.Path)
 		}
 	}
-	if got, want := len(cases), countSchemaMethods(t); got != want {
-		t.Errorf("test covers %d methods but schema/punktfunk.cue declares %d — "+
-			"the enum and the dispatch table have drifted", got, want)
+	if got, want := len(cases), len(schemaMethods(t))-len(cliMethodsFromSource(t)); got != want {
+		t.Errorf("test covers %d host methods but the served enum declares %d host methods "+
+			"(%d total minus %d client) — the enum and the dispatch table have drifted",
+			got, want, len(schemaMethods(t)), len(cliMethodsFromSource(t)))
 	}
-}
-
-// countSchemaMethods reads the method disjunction straight out of the embedded CUE so
-// the test fails when someone adds a method to one side only.
-func countSchemaMethods(t *testing.T) int {
-	t.Helper()
-	b, err := schemaFS.ReadFile("schema/punktfunk.cue")
-	if err != nil {
-		t.Fatalf("read embedded schema: %v", err)
+	// Every host method the SERVED enum advertises must be resolved here, and no
+	// client method may hide in this table: the two halves are dispatched by
+	// different builders (resolveCall vs the headless client CLI). The old text
+	// parser stopped at the first blank line in the schema, so it silently counted
+	// only the host half — and an S3 derived enum has no body to parse at all, so
+	// it would have found zero.
+	for _, m := range schemaMethods(t) {
+		if isCLIMethod(m) {
+			continue
+		}
+		if _, ok := cases[m]; !ok {
+			t.Errorf("served host method %q has no case here — the dispatch table and the enum have drifted", m)
+		}
 	}
-	src := string(b)
-	start := strings.Index(src, "\tmethod: ")
-	if start < 0 {
-		t.Fatal("schema has no `method:` field")
+	for m := range cases {
+		if isCLIMethod(m) {
+			t.Errorf("%q is a client-CLI method and cannot be resolved by resolveCall", m)
+		}
 	}
-	// The disjunction runs to the first blank line after it.
-	rest := src[start:]
-	end := strings.Index(rest, "\n\n")
-	if end < 0 {
-		t.Fatal("could not delimit the method disjunction")
-	}
-	return strings.Count(rest[:end], "\"") / 2
 }
 
 // TestMutatingMethodsAreMarked pins the read/write split. A method wrongly marked
