@@ -18,22 +18,12 @@
 	// Read methods are safe on any host; the mutating ones (pair-arm, approve, deny,
 	// unpair, rename, access, end-game, action-invoke, scanner-toggle) change host
 	// state and belong in `run:` steps, not `check:` steps.
-	method: "health" | "status" | "diagnostics" | "diagnostics-refresh" |
-		"compositors" | "gpus" | "plugins" | "hooks" |
-		"pair-status" | "pair-arm" | "pair-disarm" | "pending" | "approve" | "deny" | "pin" |
-		"clients" | "rename" | "access" | "unpair" |
-		"library" | "scanners" | "scanner-toggle" |
-		"display-state" | "display-monitors" | "display-settings" | "display-release" |
-		"actions" | "action-invoke" | "end-game" | "events" |
-
-		// CLIENT methods — served by the headless `punktfunk` CLI that every Linux
-		// client package ships, not by the host management API. They run inside the
-		// venue where punktfunk-client is installed, so a fleet bed drives BOTH sides
-		// of a stream in charly verbs instead of shelling out.
-		"hosts-list" | "hosts-add" | "hosts-forget" |
-		"pair" | "launch" | "client-library" | "speed-test" |
-		"open" | "wake" | "reachable" | "profiles-list" | "client-reset" |
-		"stream-probe"
+	//
+	// S3: the words are rows of the `_method` table at the foot of this file and
+	// the enum below is derived from its word list, so the catalog has ONE home —
+	// a new method is one row there, and the table, the derived list and this enum
+	// cannot disagree.
+	method: or(_methodWord)
 
 	// host — the client-side `<host-ref>`: a saved host name, or host[:port]. Required
 	// by every client method that names a host.
@@ -69,7 +59,7 @@
 	// unbounded launch would hang the bed instead of asserting anything.
 	stream_for?: string & =~"^[0-9]+s$" @go(StreamFor)
 
-    // client_bin — override the client binary. The Flatpak build is not on PATH and is
+	// client_bin — override the client binary. The Flatpak build is not on PATH and is
 	// reached as `flatpak run --command=punktfunk io.unom.Punktfunk`.
 	client_bin?: string @go(ClientBin)
 
@@ -105,7 +95,7 @@
 	// name — the new display name for `rename`.
 	name?: string
 	// access — the access preset for `access`.
-	access?: "full" | "controller" | "view"
+	access?: or(_accessWord)
 	// pin — the pairing PIN submitted by `pin`.
 	pin?: string
 	// enabled — the desired state for scanner-toggle.
@@ -123,3 +113,70 @@
 	// assert one field without pattern-matching a blob.
 	json_path?: string @go(JSONPath)
 }
+
+// --- vocabulary tables (S3) --------------------------------------------------
+// Every closed set of words is a table keyed by word, and its word list is
+// derived from the table and used as `or()` of that list (§10.1 S3, D-PAT-3).
+// The table and the enum it feeds therefore cannot disagree, and a new word is
+// ONE row here. `@vocab` names the owner (§3.1): this set is compiled into THIS
+// plugin, so the owner is the plugin's own word `punktfunk`.
+_method: {
+	// host / health
+	health: {}
+	status: {}
+	diagnostics: {}
+	"diagnostics-refresh": {}
+	compositors: {}
+	gpus: {}
+	plugins: {}
+	hooks: {}
+	// native pairing
+	"pair-status": {}
+	"pair-arm": {}
+	"pair-disarm": {}
+	pending: {}
+	approve: {}
+	deny: {}
+	pin: {}
+	// paired clients
+	clients: {}
+	rename: {}
+	access: {}
+	unpair: {}
+	// library
+	library: {}
+	scanners: {}
+	"scanner-toggle": {}
+	// virtual displays
+	"display-state": {}
+	"display-monitors": {}
+	"display-settings": {}
+	"display-release": {}
+	// lifecycle
+	actions: {}
+	"action-invoke": {}
+	"end-game": {}
+	// stream
+	events: {}
+	// CLIENT methods — served by the headless `punktfunk` CLI that every Linux
+	// client package ships, not by the host management API. They run inside the
+	// venue where punktfunk-client is installed, so a fleet bed drives BOTH sides
+	// of a stream in charly verbs instead of shelling out.
+	"hosts-list": {}
+	"hosts-add": {}
+	"hosts-forget": {}
+	pair: {}
+	launch: {}
+	"client-library": {}
+	"speed-test": {}
+	open: {}
+	wake: {}
+	reachable: {}
+	"profiles-list": {}
+	"client-reset": {}
+	"stream-probe": {}
+} @vocab(punktfunk)
+_methodWord: [for w, _ in _method {w}]
+
+_access: {full: {}, controller: {}, view: {}} @vocab(punktfunk)
+_accessWord: [for w, _ in _access {w}]

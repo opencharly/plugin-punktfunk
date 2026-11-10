@@ -3,12 +3,12 @@ module github.com/opencharly/plugin-punktfunk/candy/plugin-punktfunk
 go 1.26.4
 
 require (
+	cuelang.org/go v0.16.1
 	github.com/opencharly/sdk v0.2026234.347
 	github.com/opencharly/spec v0.2026232.520
 )
 
 require (
-	cuelang.org/go v0.16.1 // indirect
 	github.com/alecthomas/kong v1.15.0 // indirect
 	github.com/cockroachdb/apd/v3 v3.2.1 // indirect
 	github.com/emicklei/proto v1.14.3 // indirect
